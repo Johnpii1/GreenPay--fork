@@ -1,5 +1,7 @@
 # Contributing to GreenPay
 
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
+
 ## Getting started
 
 1. Fork and clone the repo.
@@ -73,6 +75,14 @@ cd backend && npm run dev   # → http://localhost:4000
 # terminal 2
 cd frontend && npm run dev  # → http://localhost:3000
 ```
+
+Or run both services with Docker hot reload:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+The Docker override watches backend changes through `backend/src` with Nodemon and runs the frontend Next.js dev server with polling enabled, so source edits are picked up without rebuilding images.
 
 ### 🎯 Make Your First Testnet Donation
 

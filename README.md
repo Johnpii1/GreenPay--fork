@@ -73,6 +73,16 @@ cd backend && npm run dev
 # → http://localhost:4000
 ```
 
+### Docker Hot-Reload Development
+
+Use the development override when you want frontend and backend source edits to refresh inside Docker without rebuilding:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+The override mounts `backend/src` directly into the API container and runs Nodemon in legacy watch mode for Docker Desktop file-event reliability. It mounts the frontend workspace into the Next.js container, keeps container-owned `node_modules`/`.next` directories, and enables polling for Next/Webpack watchers.
+
 ---
 
 ## 🔑 Environment Variables
@@ -107,6 +117,12 @@ ALLOWED_ORIGINS=http://localhost:3000
 ## 🤝 Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All skill levels welcome!
+
+Please note that this project is governed by a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to uphold its terms.
+
+### Secret Scanning
+
+Every push and every pull request to `main` runs Gitleaks with the repo-local `.gitleaks.toml` config. Any detected secret fails CI, so keep real credentials out of source control; use `.env` files locally and GitHub encrypted secrets for CI/deployment values. The allowlist only covers generated archives, env templates, and deterministic test fixtures.
 
 ## 🗺 Roadmap
 

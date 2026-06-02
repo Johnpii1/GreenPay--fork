@@ -120,3 +120,18 @@ CREATE TABLE IF NOT EXISTS donation_matches (
   matched_xlm NUMERIC(20, 7) NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id UUID PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id TEXT,
+  metadata JSONB DEFAULT '{}'::JSONB,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created_at ON admin_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action ON admin_audit_log(action);

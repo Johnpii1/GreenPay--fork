@@ -20,6 +20,7 @@ interface ClimateProject {
 }
 
 export default function DonateScreen() {
+  const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
   const [projects, setProjects] = useState<ClimateProject[]>([]);
@@ -219,8 +220,10 @@ export default function DonateScreen() {
       </View>
 
       {!publicKey ? (
-        <TouchableOpacity style={styles.connectButton} onPress={connectWallet}>
-          <Text style={styles.connectButtonText}>Connect Wallet</Text>
+        <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
+          onPress={connectWallet}
+        >
+          <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
         </TouchableOpacity>
       ) : (
         <View style={styles.walletCard}>
@@ -249,10 +252,11 @@ export default function DonateScreen() {
           secureTextEntry
         />
 
-        <Text style={styles.label}>Message (optional)</Text>
+        <Text style={[styles.label, { color: colors.primaryText }]}>Message (optional)</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
           placeholder="Leave a message of support..."
+          placeholderTextColor={colors.placeholder}
           value={message}
           onChangeText={setMessage}
           maxLength={100}
@@ -290,26 +294,21 @@ export default function DonateScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f7f0',
   },
   loadingText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
     marginTop: 16,
   },
   header: {
     padding: 24,
-    backgroundColor: '#227239',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
   },
   subtitle: {
     fontSize: 14,
-    color: '#e8f3e8',
     marginTop: 4,
   },
   selectorCard: {
@@ -346,7 +345,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   connectButton: {
-    backgroundColor: '#227239',
     padding: 16,
     marginHorizontal: 16,
     marginTop: 8,
@@ -354,14 +352,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   connectButtonText: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
   walletCard: {
     margin: 16,
     padding: 16,
-    backgroundColor: '#fff',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#d1e7d1',
@@ -379,18 +375,16 @@ const styles = StyleSheet.create({
   card: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
+    borderWidth: 1,
   },
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a2e1a',
     marginBottom: 8,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#e8f3e8',
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
@@ -421,7 +415,6 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   donateButton: {
-    backgroundColor: '#227239',
     padding: 16,
     margin: 16,
     borderRadius: 12,
@@ -431,7 +424,6 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   donateButtonText: {
-    color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
   },
