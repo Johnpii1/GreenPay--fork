@@ -19,6 +19,16 @@ const app  = express();
 const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
 
+// ── Swagger UI (development) ─────────────────────────────────────────────────
+if (process.env.NODE_ENV !== "production") {
+  const swaggerUi = require("swagger-ui-express");
+  const yaml = require("js-yaml");
+  const fs = require("fs");
+  const path = require("path");
+  const swaggerDoc = yaml.load(fs.readFileSync(path.join(__dirname, "../../docs/openapi.yml"), "utf8"));
+  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+}
+
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "20kb" }));
