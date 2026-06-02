@@ -6,6 +6,7 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput } from 
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useTheme } from '../theme';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 
@@ -23,6 +24,7 @@ interface ClimateProject {
 
 export default function ProjectsScreen() {
   const router = useRouter();
+  const { colors } = useTheme();
   const [projects, setProjects] = useState<ClimateProject[]>([]);
   const [filteredProjects, setFilteredProjects] = useState<ClimateProject[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,49 +68,50 @@ export default function ProjectsScreen() {
 
   if (loading) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading projects...</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+        <Text style={[styles.loadingText, { color: colors.secondaryText }]}>Loading projects...</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}> 
       <TextInput
-        style={styles.searchInput}
+        style={[styles.searchInput, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
         placeholder="Search projects..."
+        placeholderTextColor={colors.placeholder}
         value={searchQuery}
         onChangeText={setSearchQuery}
       />
-      <ScrollView style={styles.scroll}>
+      <ScrollView style={[styles.scroll, { borderColor: colors.background }]}>
         {filteredProjects.map(project => (
           <TouchableOpacity
             key={project.id}
-            style={styles.card}
+            style={[styles.card, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}
             onPress={() => router.push(`/projects/${project.id}`)}
           >
             <View style={styles.cardHeader}>
-              <Text style={styles.category}>{project.category}</Text>
-              <Text style={styles.status}>{project.status}</Text>
+              <Text style={[styles.category, { color: colors.primary }]}>{project.category}</Text>
+              <Text style={[styles.status, { color: colors.secondaryText }]}>{project.status}</Text>
             </View>
-            <Text style={styles.name}>{project.name}</Text>
-            <Text style={styles.description} numberOfLines={2}>
+            <Text style={[styles.name, { color: colors.primaryText }]}>{project.name}</Text>
+            <Text style={[styles.description, { color: colors.secondaryText }]} numberOfLines={2}>
               {project.description}
             </Text>
             <View style={styles.progressContainer}>
-              <View style={styles.progressBar}>
+              <View style={[styles.progressBar, { backgroundColor: colors.border }]}> 
                 <View
                   style={[
                     styles.progressFill,
-                    { width: `${progressPercent(project.raisedXLM, project.goalXLM)}%` }
+                    { width: `${progressPercent(project.raisedXLM, project.goalXLM)}%`, backgroundColor: colors.primary }
                   ]}
                 />
               </View>
-              <Text style={styles.progressText}>
+              <Text style={[styles.progressText, { color: colors.secondaryText }]}> 
                 {parseFloat(project.raisedXLM).toFixed(2)} / {parseFloat(project.goalXLM).toFixed(2)} XLM
               </Text>
             </View>
-            <Text style={styles.donorCount}>{project.donorCount} donors</Text>
+            <Text style={[styles.donorCount, { color: colors.muted }]}>{project.donorCount} donors</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
@@ -119,14 +122,13 @@ export default function ProjectsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f7f0',
   },
   searchInput: {
     margin: 16,
     padding: 12,
-    backgroundColor: '#fff',
     borderRadius: 8,
     fontSize: 16,
+    borderWidth: 1,
   },
   scroll: {
     flex: 1,
@@ -134,20 +136,18 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
     marginTop: 40,
   },
   card: {
-    backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    borderWidth: 1,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -156,23 +156,19 @@ const styles = StyleSheet.create({
   },
   category: {
     fontSize: 12,
-    color: '#227239',
     fontWeight: '600',
     textTransform: 'uppercase',
   },
   status: {
     fontSize: 12,
-    color: '#5a7a5a',
   },
   name: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#1a2e1a',
     marginBottom: 4,
   },
   description: {
     fontSize: 14,
-    color: '#5a7a5a',
     marginBottom: 12,
   },
   progressContainer: {
@@ -180,22 +176,18 @@ const styles = StyleSheet.create({
   },
   progressBar: {
     height: 8,
-    backgroundColor: '#e8f3e8',
     borderRadius: 4,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#227239',
   },
   progressText: {
     fontSize: 12,
-    color: '#5a7a5a',
     marginTop: 4,
   },
   donorCount: {
     fontSize: 12,
-    color: '#8aaa8a',
     marginTop: 8,
   },
 });
