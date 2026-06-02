@@ -110,6 +110,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All skill levels welcome!
 
 Please note that this project is governed by a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to uphold its terms.
 
+### Secret Scanning
+
+Every push and every pull request to `main` runs Gitleaks with the repo-local `.gitleaks.toml` config. Any detected secret fails CI, so keep real credentials out of source control; use `.env` files locally and GitHub encrypted secrets for CI/deployment values. The allowlist only covers generated archives, env templates, and deterministic test fixtures.
+
 ## 🗺 Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features.
