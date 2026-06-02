@@ -6,8 +6,12 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Image } from 'rea
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { getCachedData, setCachedData } from '../utils/cache';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+
+const CACHE_KEY_FEATURED = 'home:featured_project';
+const CACHE_KEY_STATS = 'home:global_stats';
 
 interface ClimateProject {
   id: string;
@@ -25,6 +29,7 @@ export default function HomeScreen() {
   const [featuredProject, setFeaturedProject] = useState<ClimateProject | null>(null);
   const [globalStats, setGlobalStats] = useState({ totalDonations: 0, totalXLMRaised: '0' });
   const [loading, setLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -36,10 +41,25 @@ export default function HomeScreen() {
         axios.get(`${API_URL}/api/projects/featured`),
         axios.get(`${API_URL}/api/stats/global`)
       ]);
-      setFeaturedProject(featuredRes.data.data);
-      setGlobalStats(statsRes.data.data);
+      const featured = featuredRes.data.data;
+      const stats = statsRes.data.data;
+      setFeaturedProject(featured);
+      setGlobalStats(stats);
+      setIsOffline(false);
+      await Promise.all([
+        setCachedData(CACHE_KEY_FEATURED, featured),
+        setCachedData(CACHE_KEY_STATS, stats),
+      ]);
     } catch (error) {
-      console.error('Error loading data:', error);
+      // Network failed — try cache
+      const [cachedFeatured, cachedStats] = await Promise.all([
+        getCachedData<ClimateProject>(CACHE_KEY_FEATURED),
+        getCachedData<{ totalDonations: number; totalXLMRaised: string }>(CACHE_KEY_STATS),
+      ]);
+      if (cachedFeatured) setFeaturedProject(cachedFeatured.data);
+      if (cachedStats) setGlobalStats(cachedStats.data);
+      if (cachedFeatured || cachedStats) setIsOffline(true);
+      else console.error('Error loading data:', error);
     } finally {
       setLoading(false);
     }
@@ -55,6 +75,11 @@ export default function HomeScreen() {
 
   return (
     <ScrollView style={styles.container}>
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>Offline — showing cached data</Text>
+        </View>
+      )}
       <View style={styles.header}>
         <Text style={styles.title}>Stellar GreenPay</Text>
         <Text style={styles.subtitle}>Climate donations on Stellar</Text>
@@ -197,6 +222,16 @@ const styles = StyleSheet.create({
   browseButtonText: {
     color: '#227239',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  offlineBanner: {
+    backgroundColor: '#f5a623',
+    padding: 8,
+    alignItems: 'center',
+  },
+  offlineBannerText: {
+    color: '#fff',
+    fontSize: 13,
     fontWeight: '600',
   },
 });

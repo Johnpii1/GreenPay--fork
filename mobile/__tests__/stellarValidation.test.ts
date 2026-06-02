@@ -7,7 +7,7 @@
  */
 import { isValidStellarAddress } from '../utils/stellarValidation';
 
-const VALID_ADDRESS = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
+const VALID_ADDRESS = 'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP';
 
 describe('isValidStellarAddress', () => {
   it('accepts a well-formed 56-character G-address', () => {

@@ -6,8 +6,10 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput } from 
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { getCachedData, setCachedData } from '../../utils/cache';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+const CACHE_KEY_PROJECTS = 'projects:list';
 
 interface ClimateProject {
   id: string;
@@ -27,6 +29,7 @@ export default function ProjectsScreen() {
   const [filteredProjects, setFilteredProjects] = useState<ClimateProject[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -48,10 +51,20 @@ export default function ProjectsScreen() {
   const loadProjects = async () => {
     try {
       const res = await axios.get(`${API_URL}/api/projects`);
-      setProjects(res.data.data);
-      setFilteredProjects(res.data.data);
+      const data = res.data.data;
+      setProjects(data);
+      setFilteredProjects(data);
+      setIsOffline(false);
+      await setCachedData(CACHE_KEY_PROJECTS, data);
     } catch (error) {
-      console.error('Error loading projects:', error);
+      const cached = await getCachedData<ClimateProject[]>(CACHE_KEY_PROJECTS);
+      if (cached) {
+        setProjects(cached.data);
+        setFilteredProjects(cached.data);
+        setIsOffline(true);
+      } else {
+        console.error('Error loading projects:', error);
+      }
     } finally {
       setLoading(false);
     }
@@ -74,6 +87,11 @@ export default function ProjectsScreen() {
 
   return (
     <View style={styles.container}>
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>Offline — showing cached data</Text>
+        </View>
+      )}
       <TextInput
         style={styles.searchInput}
         placeholder="Search projects..."
@@ -197,5 +215,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8aaa8a',
     marginTop: 8,
+  },
+  offlineBanner: {
+    backgroundColor: '#f5a623',
+    padding: 8,
+    alignItems: 'center',
+  },
+  offlineBannerText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
