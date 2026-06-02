@@ -154,15 +154,15 @@ describe("POST /api/donations", () => {
     };
 
     const client = createMockClient(
-      queryResult([{ id: "project-1" }]),
-      queryResult([]),
-      queryResult(),
-      queryResult([donationRow]),
-      queryResult(),
-      queryResult([]),
-      queryResult([{ count: "1" }]),
-      queryResult([]),
-      queryResult(),
+      queryResult([{ id: "project-1" }]),   // SELECT project
+      queryResult([]),                         // dedup check
+      queryResult(),                           // BEGIN
+      queryResult([donationRow]),              // INSERT donation
+      queryResult([]),                         // SELECT donation_matches (empty)
+      queryResult(),                           // UPDATE projects
+      queryResult([]),                         // SELECT * FROM profiles (new donor)
+      queryResult([{ count: "1" }]),           // SELECT COUNT(DISTINCT project_id)
+      queryResult(),                           // INSERT INTO profiles
     );
 
     const { res, next } = await invokeRecordDonation({
@@ -282,9 +282,9 @@ describe("POST /api/donations", () => {
 
   test("updates project totals after a donation", async () => {
     const client = createMockClient(
-      queryResult([{ id: "project-2" }]),
-      queryResult([]),
-      queryResult(),
+      queryResult([{ id: "project-2" }]),    // SELECT project
+      queryResult([]),                          // dedup check
+      queryResult(),                            // BEGIN
       queryResult([{
         id: "donation-2",
         project_id: "project-2",
@@ -295,12 +295,12 @@ describe("POST /api/donations", () => {
         message: null,
         transaction_hash: makeTxHash("e"),
         created_at: "2026-03-29T10:00:00.000Z",
-      }]),
-      queryResult(),
-      queryResult([]),
-      queryResult([{ count: "1" }]),
-      queryResult([]),
-      queryResult(),
+      }]),                                      // INSERT donation
+      queryResult([]),                          // SELECT donation_matches (empty)
+      queryResult(),                            // UPDATE projects
+      queryResult([]),                          // SELECT * FROM profiles (new donor)
+      queryResult([{ count: "1" }]),            // SELECT COUNT(DISTINCT project_id)
+      queryResult(),                            // INSERT INTO profiles
     );
 
     const { res, next } = await invokeRecordDonation({
@@ -320,9 +320,9 @@ describe("POST /api/donations", () => {
   test("calculates badges from cumulative donations across multiple requests", async () => {
     const donorAddress = makePublicKey("F");
     const client = createMockClient(
-      queryResult([{ id: "project-3" }]),
-      queryResult([]),
-      queryResult(),
+      queryResult([{ id: "project-3" }]),    // SELECT project
+      queryResult([]),                          // dedup check
+      queryResult(),                            // BEGIN
       queryResult([{
         id: "donation-3",
         project_id: "project-3",
@@ -333,17 +333,17 @@ describe("POST /api/donations", () => {
         message: null,
         transaction_hash: makeTxHash("f"),
         created_at: "2026-03-29T10:00:00.000Z",
-      }]),
-      queryResult(),
-      queryResult([{
+      }]),                                      // INSERT donation
+      queryResult([]),                          // SELECT donation_matches (empty)
+      queryResult(),                            // UPDATE projects
+      queryResult([{                            // SELECT * FROM profiles (returning existing)
         public_key: donorAddress,
         display_name: "Existing Donor",
         bio: "Already donated before",
         total_donated_xlm: "99.0000000",
       }]),
-      queryResult([{ count: "3" }]),
-      queryResult([]),
-      queryResult(),
+      queryResult([{ count: "3" }]),            // SELECT COUNT(DISTINCT project_id)
+      queryResult(),                            // INSERT INTO profiles
     );
 
     const { res, next } = await invokeRecordDonation({

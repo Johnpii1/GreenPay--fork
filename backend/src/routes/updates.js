@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { mapProjectUpdateRow, mapProjectRow } = require("../services/store");
 const { sendUpdateNotifications } = require("../services/email");
+const { sendUpdatePushNotifications } = require("../services/push");
 
 // Simple admin key guard — set ADMIN_API_KEY in env; omit to disable auth in dev
 function adminOnly(req, res, next) {
@@ -93,7 +94,12 @@ router.post("/", adminOnly, async (req, res, next) => {
       const emails = rows.map((r) => r.email);
       return sendUpdateNotifications({ project, update, emails });
     }).catch((err) => {
-      console.error("[updates] Failed to send notifications:", err.message);
+      console.error("[updates] Failed to send email notifications:", err.message);
+    });
+
+    // Send push notifications (non-blocking)
+    sendUpdatePushNotifications({ project, update }).catch((err) => {
+      console.error("[updates] Failed to send push notifications:", err.message);
     });
 
     res.status(201).json({ success: true, data: update });

@@ -105,3 +105,32 @@ jobs:
       - run: cargo check --workspace
       - run: cargo test --workspace
       - run: cargo build --workspace --target wasm32-unknown-unknown --release
+
+  zap_scan:
+    name: DAST Security Scan (OWASP ZAP)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: 'https://staging.greenpay.app'
+          cmd_options: '-J report.json'
+          fail_action: false
+
+      - name: Run Security Triage Script
+        run: node scripts/triage-zap.js
+
+      - name: Upload ZAP Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-scan-report
+          path: |
+            report_html.html
+            report.json
+          retention-days: 14
+          if-no-files-found: warn

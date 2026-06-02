@@ -162,6 +162,18 @@ async function recordDonation(req, res, next) {
 
     await client.query("COMMIT");
     inTransaction = false;
+
+    const io = req.app?.get("io");
+    if (io) {
+      io.emit("donation_event", {
+        projectId,
+        donorAddress,
+        amountXLM: donationResult.rows[0].amount_xlm,
+        transactionHash,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     res.status(201).json({ success: true, data: mapDonationRow(donationResult.rows[0]) });
   } catch (e) {
     if (inTransaction && client) await client.query("ROLLBACK");

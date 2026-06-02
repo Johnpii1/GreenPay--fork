@@ -7,7 +7,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Linking } from 'expo-linking';
-import { authenticate } from '../../hooks/useBiometricAuth';
+import { getPushToken, registerDeviceToken } from '../../utils/notifications';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -19,6 +19,7 @@ interface ClimateProject {
 }
 
 export default function DonateScreen() {
+  const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
   const [project, setProject] = useState<ClimateProject | null>(null);
@@ -27,10 +28,25 @@ export default function DonateScreen() {
   const [currency, setCurrency] = useState<'XLM' | 'USDC'>('XLM');
   const [loading, setLoading] = useState(false);
   const [publicKey, setPublicKey] = useState('');
+  const [pushToken, setPushToken] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) loadProject(id as string);
+    // Initialize push token on component mount
+    initializeNotifications();
   }, [id]);
+
+  const initializeNotifications = async () => {
+    try {
+      const token = await getPushToken();
+      if (token) {
+        setPushToken(token);
+        console.log('Push token obtained:', token);
+      }
+    } catch (error) {
+      console.error('Error initializing notifications:', error);
+    }
+  };
 
   const loadProject = async (projectId: string) => {
     try {
@@ -61,7 +77,6 @@ export default function DonateScreen() {
     setLoading(true);
 
     try {
-      // Build transaction using Stellar SDK
       const { Server, TransactionBuilder, Networks, Operation, Asset } = require('@stellar/stellar-sdk');
       const server = new Server(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
@@ -85,7 +100,6 @@ export default function DonateScreen() {
         .setTimeout(60)
         .build();
 
-      // Open Freighter mobile app via deep link
       const xdr = transaction.toXDR();
       const freighterUrl = `freighter://tx?xdr=${encodeURIComponent(xdr)}`;
 
@@ -106,8 +120,6 @@ export default function DonateScreen() {
   };
 
   const connectWallet = async () => {
-    // For mobile, we'll use a simple input for now
-    // In production, integrate with Freighter mobile SDK
     Alert.alert(
       'Connect Wallet',
       'Enter your Stellar public key:',
@@ -115,9 +127,19 @@ export default function DonateScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'OK',
-          onPress: (input: any) => {
+          onPress: async (input: any) => {
             if (input && /^G[A-Z0-9]{55}$/.test(input)) {
               setPublicKey(input);
+              
+              // Register device token with backend when wallet connects
+              if (pushToken) {
+                try {
+                  await registerDeviceToken(pushToken, input);
+                  console.log('Device token registered with wallet address');
+                } catch (error) {
+                  console.error('Error registering device token:', error);
+                }
+              }
             } else {
               Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');
             }
@@ -130,55 +152,70 @@ export default function DonateScreen() {
 
   if (!project) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading project...</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+        <Text style={[styles.loadingText, { color: colors.secondaryText }]}>Loading project...</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Donate to {project.name}</Text>
-        <Text style={styles.subtitle}>100% goes directly to the project</Text>
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View style={[styles.header, { backgroundColor: colors.primary }]}> 
+        <Text style={[styles.title, { color: colors.headerText }]}>Donate to {project.name}</Text>
+        <Text style={[styles.subtitle, { color: colors.headerText }]}>100% goes directly to the project</Text>
       </View>
 
       {!publicKey ? (
-        <TouchableOpacity style={styles.connectButton} onPress={connectWallet}>
-          <Text style={styles.connectButtonText}>Connect Wallet</Text>
+        <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
+          onPress={connectWallet}
+        >
+          <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
         </TouchableOpacity>
       ) : (
-        <View style={styles.walletCard}>
-          <Text style={styles.walletLabel}>Connected as:</Text>
-          <Text style={styles.walletAddress}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
+        <View style={[styles.walletCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}> 
+          <Text style={[styles.walletLabel, { color: colors.muted }]}>Connected as:</Text>
+          <Text style={[styles.walletAddress, { color: colors.primary }]}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
         </View>
       )}
 
-      <View style={styles.card}>
-        <Text style={styles.label}>Currency</Text>
+      <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}> 
+        <Text style={[styles.label, { color: colors.primaryText }]}>Currency</Text>
         <View style={styles.currencySelector}>
           <TouchableOpacity
-            style={[styles.currencyButton, currency === 'XLM' && styles.currencyButtonActive]}
+            style={[
+              styles.currencyButton,
+              { backgroundColor: currency === 'XLM' ? colors.primary : colors.inputBackground },
+            ]}
             onPress={() => setCurrency('XLM')}
           >
-            <Text style={[styles.currencyButtonText, currency === 'XLM' && styles.currencyButtonTextActive]}>
+            <Text style={[
+              styles.currencyButtonText,
+              { color: currency === 'XLM' ? colors.buttonText : colors.secondaryText },
+            ]}>
               XLM
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.currencyButton, currency === 'USDC' && styles.currencyButtonActive]}
+            style={[
+              styles.currencyButton,
+              { backgroundColor: currency === 'USDC' ? colors.primary : colors.inputBackground },
+            ]}
             onPress={() => setCurrency('USDC')}
           >
-            <Text style={[styles.currencyButtonText, currency === 'USDC' && styles.currencyButtonTextActive]}>
+            <Text style={[
+              styles.currencyButtonText,
+              { color: currency === 'USDC' ? colors.buttonText : colors.secondaryText },
+            ]}>
               USDC
             </Text>
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.label}>Amount ({currency})</Text>
+        <Text style={[styles.label, { color: colors.primaryText }]}>Amount ({currency})</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
           placeholder="Enter amount..."
+          placeholderTextColor={colors.placeholder}
           value={amount}
           onChangeText={setAmount}
           keyboardType="decimal-pad"
@@ -188,20 +225,27 @@ export default function DonateScreen() {
           {['5', '10', '25', '50', '100'].map(preset => (
             <TouchableOpacity
               key={preset}
-              style={[styles.presetButton, amount === preset && styles.presetButtonActive]}
+              style={[
+                styles.presetButton,
+                { backgroundColor: amount === preset ? colors.primary : colors.inputBackground },
+              ]}
               onPress={() => setAmount(preset)}
             >
-              <Text style={[styles.presetButtonText, amount === preset && styles.presetButtonTextActive]}>
+              <Text style={[
+                styles.presetButtonText,
+                { color: amount === preset ? colors.buttonText : colors.secondaryText },
+              ]}>
                 {preset} {currency}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        <Text style={styles.label}>Message (optional)</Text>
+        <Text style={[styles.label, { color: colors.primaryText }]}>Message (optional)</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
           placeholder="Leave a message of support..."
+          placeholderTextColor={colors.placeholder}
           value={message}
           onChangeText={setMessage}
           maxLength={100}
@@ -209,11 +253,11 @@ export default function DonateScreen() {
       </View>
 
       <TouchableOpacity
-        style={[styles.donateButton, loading && styles.donateButtonDisabled]}
+        style={[styles.donateButton, { backgroundColor: colors.buttonBackground }, loading && styles.donateButtonDisabled]}
         onPress={handleDonate}
         disabled={loading}
       >
-        <Text style={styles.donateButtonText}>
+        <Text style={[styles.donateButtonText, { color: colors.buttonText }]}> 
           {loading ? 'Building...' : `🌱 Donate ${amount || currency}`}
         </Text>
       </TouchableOpacity>
@@ -224,91 +268,62 @@ export default function DonateScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f7f0',
   },
   loadingText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
     marginTop: 40,
   },
   header: {
     padding: 24,
-    backgroundColor: '#227239',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
   },
   subtitle: {
     fontSize: 14,
-    color: '#e8f3e8',
     marginTop: 4,
   },
   connectButton: {
-    backgroundColor: '#227239',
     padding: 16,
     margin: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
   connectButtonText: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
   walletCard: {
     margin: 16,
     padding: 16,
-    backgroundColor: '#fff',
     borderRadius: 12,
     alignItems: 'center',
+    borderWidth: 1,
   },
   walletLabel: {
     fontSize: 12,
-    color: '#8aaa8a',
   },
   walletAddress: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#227239',
     marginTop: 4,
   },
   card: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a2e1a',
     marginBottom: 8,
-  },
-  currencySelector: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  currencyButton: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#f0f7f0',
-    alignItems: 'center',
-  },
-  currencyButtonActive: {
-    backgroundColor: '#227239',
-  },
-  currencyButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#5a7a5a',
-  },
-  currencyButtonTextActive: {
-    color: '#fff',
   },
   input: {
     borderWidth: 1,
@@ -317,6 +332,27 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
     marginBottom: 16,
+  },
+  currencySelector: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  currencyButton: {
+    flex: 1,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e8f3e8',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  currencyButtonActive: {
+    backgroundColor: '#227239',
+    borderColor: '#227239',
+  },
+  currencyButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   presets: {
     flexDirection: 'row',
@@ -327,32 +363,28 @@ const styles = StyleSheet.create({
   presetButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f0f7f0',
+    borderWidth: 1,
+    borderColor: '#e8f3e8',
+    borderRadius: 20,
   },
   presetButtonActive: {
     backgroundColor: '#227239',
+    borderColor: '#227239',
   },
   presetButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#5a7a5a',
-  },
-  presetButtonTextActive: {
-    color: '#fff',
   },
   donateButton: {
-    backgroundColor: '#227239',
     padding: 16,
     margin: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
   donateButtonDisabled: {
-    opacity: 0.6,
+    backgroundColor: '#8aaa8a',
   },
   donateButtonText: {
-    color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
   },

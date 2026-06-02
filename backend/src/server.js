@@ -16,10 +16,21 @@ const { startTurretsServer } = require("./services/turrets");
 const http = require("http");
 const { Server } = require("socket.io");
 const { startIndexer } = require("./services/indexerService");
+const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
+
+// ── Swagger UI (development) ─────────────────────────────────────────────────
+if (process.env.NODE_ENV !== "production") {
+  const swaggerUi = require("swagger-ui-express");
+  const yaml = require("js-yaml");
+  const fs = require("fs");
+  const path = require("path");
+  const swaggerDoc = yaml.load(fs.readFileSync(path.join(__dirname, "../../docs/openapi.yml"), "utf8"));
+  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+}
 
 app.use(helmet());
 app.use(morgan("dev"));
@@ -42,13 +53,17 @@ app.use(cors({
   methods: ["GET", "POST", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "X-CSRF-Token"],
 }));
+const origins = getAllowedOrigins();
+app.use(...createCorsMiddleware(origins));
 
 const io = new Server(server, {
   cors: {
     origin: origins,
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: false,
   }
 });
+app.set("io", io);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, legacyHeaders: false }));
 
 app.get("/api/csrf-token", (req, res) => {
@@ -66,9 +81,11 @@ app.use("/api/jobs",           require("./routes/jobs"));
 app.use("/api/stats",          require("./routes/stats"));
 app.use("/api/impact",         require("./routes/impact"));
 app.use("/api/ratings",        require("./routes/ratings"));
+app.use("/api/notifications",  require("./routes/notifications"));
 
 app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
 app.use((err, req, res, next) => {
+  void next;
   console.error("[Error]", err.message);
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
