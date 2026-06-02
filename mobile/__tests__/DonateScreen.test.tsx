@@ -31,7 +31,7 @@ import DonateScreen from '../app/donate/[id]';
 describe('DonateScreen – biometric auth gate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECT } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
   });
