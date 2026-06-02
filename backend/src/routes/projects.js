@@ -7,6 +7,7 @@ const express = require("express");
 const router = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
+const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow } = require("../services/store");
 const { getOnChainProject, CONTRACT_ID, server, NETWORK_PASSPHRASE } = require("../services/stellar");
 const { generateProjectSummary } = require("../services/claude");
@@ -237,6 +238,15 @@ router.post("/:id/campaigns", async (req, res, next) => {
       [uuid(), req.params.id, trimmedTitle, trimmedDescription || null, goal.toFixed(7), deadlineDate.toISOString()],
     );
 
+    logAdminAction({
+      actor: req.body?.adminAddress || "unknown",
+      action: "project.campaign.create",
+      targetType: "project_campaign",
+      targetId: result.rows[0].id,
+      metadata: { projectId: req.params.id, title: trimmedTitle, goalXLM: goal, deadline },
+      ipAddress: req.ip,
+    });
+
     res.status(201).json({ success: true, data: mapCampaignRow(result.rows[0]) });
   } catch (e) {
     next(e);
@@ -280,6 +290,16 @@ router.post("/:id/milestones", async (req, res, next) => {
        RETURNING *`,
       [uuid(), req.params.id, title, percentage],
     );
+
+    logAdminAction({
+      actor: req.body?.adminAddress || "unknown",
+      action: "project.milestone.create",
+      targetType: "project_milestone",
+      targetId: result.rows[0].id,
+      metadata: { projectId: req.params.id, title, percentage },
+      ipAddress: req.ip,
+    });
+
     res.status(201).json({ success: true, data: mapProjectMilestoneRow(result.rows[0]) });
   } catch (e) {
     next(e);
@@ -297,6 +317,16 @@ router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
       [transactionHash || null, req.params.milestoneId, req.params.id],
     );
     if (!result.rows[0]) return res.status(404).json({ error: "Milestone not found" });
+
+    logAdminAction({
+      actor: req.body?.adminAddress || "unknown",
+      action: "project.milestone.reach",
+      targetType: "project_milestone",
+      targetId: req.params.milestoneId,
+      metadata: { projectId: req.params.id, transactionHash },
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, data: mapProjectMilestoneRow(result.rows[0]) });
   } catch (e) {
     next(e);
@@ -326,6 +356,15 @@ router.post("/admin/register", async (req, res) => {
     .setTimeout(30)
     .build();
 
+    logAdminAction({
+      actor: adminAddress,
+      action: "project.register",
+      targetType: "project",
+      targetId: projectId,
+      metadata: { name, wallet, co2PerXLM },
+      ipAddress: req.ip,
+    });
+
     res.json({ success: true, xdr: tx.toXDR() });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -352,6 +391,15 @@ router.post("/admin/confirm", async (req, res) => {
        RETURNING *`,
       [projectId],
     );
+
+    logAdminAction({
+      actor: "admin",
+      action: "project.confirm",
+      targetType: "project",
+      targetId: projectId,
+      metadata: { transactionHash },
+      ipAddress: req.ip,
+    });
 
     res.json({ success: true, data: result.rows[0] ? mapProjectRow(result.rows[0]) : null });
   } catch (err) {
@@ -455,8 +503,6 @@ router.post("/:id/generate-summary", async (req, res, next) => {
       if (err.code === "MISSING_API_KEY") {
         return res.status(503).json({ error: "AI summary feature is not configured on this server" });
       }
-      // Surface upstream Anthropic errors with their HTTP status when available
-      // so the client can distinguish 429 (rate-limited) from 5xx (retry later).
       const status = err.status && Number.isInteger(err.status) ? err.status : 502;
       return res.status(status).json({ error: err.message || "Failed to generate summary" });
     }
@@ -477,6 +523,15 @@ router.post("/:id/generate-summary", async (req, res, next) => {
         RETURNING ai_summary, ai_summary_generated_at, ai_summary_model, ai_summary_source_hash`,
       [summaryResult.summary, summaryResult.model, sourceHash, req.params.id],
     );
+
+    logAdminAction({
+      actor: adminAddress,
+      action: "project.summary.generate",
+      targetType: "project",
+      targetId: req.params.id,
+      metadata: { model: summaryResult.model },
+      ipAddress: req.ip,
+    });
 
     const row = updated.rows[0];
     res.json({
@@ -524,6 +579,15 @@ router.post("/:id/matching", async (req, res, next) => {
        RETURNING id, project_id, matcher_address, cap_xlm, multiplier, matched_xlm, expires_at, created_at`,
       [uuid(), req.params.id, matcherAddress, Number.parseFloat(capXLM).toFixed(7), multiplier, new Date(expiresAt).toISOString()],
     );
+
+    logAdminAction({
+      actor: matcherAddress,
+      action: "project.matching.create",
+      targetType: "donation_match",
+      targetId: result.rows[0].id,
+      metadata: { projectId: req.params.id, capXLM, multiplier, expiresAt },
+      ipAddress: req.ip,
+    });
 
     const row = result.rows[0];
     res.status(201).json({
@@ -599,6 +663,15 @@ router.patch("/:id/status", async (req, res, next) => {
        RETURNING *`,
       [status, reason || null, req.params.id],
     );
+
+    logAdminAction({
+      actor: adminAddress || "unknown",
+      action: `project.status.${status}`,
+      targetType: "project",
+      targetId: req.params.id,
+      metadata: { previousStatus: projectResult.rows[0].status, reason },
+      ipAddress: req.ip,
+    });
 
     res.json({ success: true, data: mapProjectRow(result.rows[0]) });
   } catch (e) {

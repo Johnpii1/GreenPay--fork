@@ -4,7 +4,8 @@
 "use strict";
 
 const express   = require("express");
-const cors      = require("cors");
+const cookieParser = require("cookie-parser");
+const csurf     = require("csurf");
 const helmet    = require("helmet");
 const morgan    = require("morgan");
 const rateLimit = require("express-rate-limit");
@@ -14,27 +15,47 @@ const { startTurretsServer } = require("./services/turrets");
 const http = require("http");
 const { Server } = require("socket.io");
 const { startIndexer } = require("./services/indexerService");
+const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
 
+// ── Swagger UI (development) ─────────────────────────────────────────────────
+if (process.env.NODE_ENV !== "production") {
+  const swaggerUi = require("swagger-ui-express");
+  const yaml = require("js-yaml");
+  const fs = require("fs");
+  const path = require("path");
+  const swaggerDoc = yaml.load(fs.readFileSync(path.join(__dirname, "../../docs/openapi.yml"), "utf8"));
+  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+}
+
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "20kb" }));
-
-const origins = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(o => o.trim());
-app.use(cors({
-  origin: (origin, cb) => (!origin || origins.includes(origin)) ? cb(null, true) : cb(new Error("CORS blocked")),
-  methods: ["GET", "POST", "PATCH"],
+app.use(cookieParser());
+app.use(csurf({
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "none",
+    path: "/",
+  },
+  ignoreMethods: ["GET", "HEAD", "OPTIONS"],
 }));
+
+const origins = getAllowedOrigins();
+app.use(...createCorsMiddleware(origins));
 
 const io = new Server(server, {
   cors: {
     origin: origins,
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: false,
   }
 });
+app.set("io", io);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, legacyHeaders: false }));
 
 app.use("/health",        require("./routes/health"));
@@ -52,6 +73,7 @@ app.use("/api/admin",          require("./routes/admin"));
 
 app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
 app.use((err, req, res, next) => {
+  void next;
   console.error("[Error]", err.message);
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
@@ -74,9 +96,11 @@ async function startServer() {
   }
 }
 
-startServer().catch((err) => {
-  console.error("[Startup Error]", err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((err) => {
+    console.error("[Startup Error]", err.message);
+    process.exit(1);
+  });
+}
 
 module.exports = app;

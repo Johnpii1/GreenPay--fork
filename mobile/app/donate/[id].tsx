@@ -1,13 +1,13 @@
 /**
  * app/donate/[id].tsx
- * Donate screen with wallet integration
+ * Donate screen with project selector, amount input, and Stellar transaction submission.
  */
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Linking } from 'expo-linking';
 import { authenticate } from '../../hooks/useBiometricAuth';
+import { Keypair, Server, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -15,60 +15,101 @@ const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-test
 interface ClimateProject {
   id: string;
   name: string;
+  description: string;
   walletAddress: string;
 }
 
 export default function DonateScreen() {
+  const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
-  const [project, setProject] = useState<ClimateProject | null>(null);
-  const [amount, setAmount] = useState('');
+  const [projects, setProjects] = useState<ClimateProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>(id as string | undefined);
+  const [amount, setAmount] = useState('1');
   const [message, setMessage] = useState('');
-  const [currency, setCurrency] = useState<'XLM' | 'USDC'>('XLM');
-  const [loading, setLoading] = useState(false);
+  const [secretKey, setSecretKey] = useState('');
   const [publicKey, setPublicKey] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusType, setStatusType] = useState<'success' | 'error' | 'info' | null>(null);
 
   useEffect(() => {
-    if (id) loadProject(id as string);
+    loadProjects();
   }, [id]);
 
-  const loadProject = async (projectId: string) => {
+  const loadProjects = async () => {
+    setLoading(true);
+    setStatusMessage(null);
+
     try {
-      const res = await axios.get(`${API_URL}/api/projects/${projectId}`);
-      setProject(res.data.data);
+      const res = await axios.get(`${API_URL}/api/projects`);
+      const list: ClimateProject[] = Array.isArray(res.data.data) ? res.data.data : [];
+      setProjects(list);
+      const initialProjectId = (id as string | undefined) || list[0]?.id;
+      setSelectedProjectId(initialProjectId);
     } catch (error) {
-      console.error('Error loading project:', error);
+      console.error('Error loading projects:', error);
+      setStatusType('error');
+      setStatusMessage('Unable to load projects. Please try again later.');
+    } finally {
+      setLoading(false);
     }
   };
 
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) || projects[0] || null;
+
   const handleDonate = async () => {
-    if (!project || !amount || parseFloat(amount) < 1) {
-      Alert.alert('Error', 'Please enter a valid amount (minimum 1)');
+    if (!selectedProject) {
+      Alert.alert('Error', 'Please choose a project to donate to.');
+      return;
+    }
+
+    const donationAmount = parseFloat(amount);
+    if (!amount || Number.isNaN(donationAmount) || donationAmount < 1) {
+      Alert.alert('Error', 'Please enter a valid amount (minimum 1 XLM).');
       return;
     }
 
     if (!publicKey) {
-      Alert.alert('Wallet Required', 'Please connect your Stellar wallet first');
+      Alert.alert('Wallet Required', 'Please connect your Stellar wallet first.');
       return;
     }
 
-    const confirmed = await authenticate('Confirm donation with biometrics or PIN');
-    if (!confirmed) {
-      Alert.alert('Authentication Required', 'You must authenticate to sign a transaction');
+    if (!secretKey.trim()) {
+      Alert.alert('Secret Required', 'Please enter your Stellar secret key to sign the transaction.');
       return;
     }
 
-    setLoading(true);
+    let keypair;
+    try {
+      keypair = Keypair.fromSecret(secretKey.trim());
+    } catch (error) {
+      Alert.alert('Invalid Secret Key', 'The secret key you entered is not valid.');
+      return;
+    }
+
+    if (keypair.publicKey() !== publicKey) {
+      Alert.alert(
+        'Key Mismatch',
+        'The secret key does not match the connected public key. Please use the same account.'
+      );
+      return;
+    }
+
+    const authenticated = await authenticate('Confirm donation with biometrics or PIN');
+    if (!authenticated) {
+      Alert.alert('Authentication Required', 'You must authenticate to sign the transaction.');
+      return;
+    }
+
+    setSubmitting(true);
+    setStatusType('info');
+    setStatusMessage('Signing and submitting your donation...');
 
     try {
-      // Build transaction using Stellar SDK
-      const { Server, TransactionBuilder, Networks, Operation, Asset } = require('@stellar/stellar-sdk');
       const server = new Server(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
-
-      const asset = currency === 'USDC'
-        ? new Asset('USDC', process.env.EXPO_PUBLIC_USDC_ISSUER)
-        : Asset.native();
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: '100',
@@ -76,38 +117,46 @@ export default function DonateScreen() {
       })
         .addOperation(
           Operation.payment({
-            destination: project.walletAddress,
-            asset,
-            amount: currency === 'XLM' ? parseFloat(amount).toFixed(7) : parseFloat(amount).toFixed(2),
+            destination: selectedProject.walletAddress,
+            asset: Asset.native(),
+            amount: donationAmount.toFixed(7),
           })
         )
-        .addMemo(Operation.memo({ type: 'text', value: `GreenPay:${project.id.slice(0, 16)}` }))
+        .addMemo(Memo.text(`GreenPay:${selectedProject.id.slice(0, 16)}`))
         .setTimeout(60)
         .build();
 
-      // Open Freighter mobile app via deep link
-      const xdr = transaction.toXDR();
-      const freighterUrl = `freighter://tx?xdr=${encodeURIComponent(xdr)}`;
+      transaction.sign(keypair);
+      const horizonResult = await server.submitTransaction(transaction);
+      const transactionHash = horizonResult.hash;
 
-      const supported = await Linking.canOpenURL(freighterUrl);
-      if (supported) {
-        await Linking.openURL(freighterUrl);
-      } else {
-        Alert.alert(
-          'Wallet Not Found',
-          'Please install Freighter mobile app to sign transactions'
-        );
-      }
+      await axios.post(`${API_URL}/api/donations`, {
+        projectId: selectedProject.id,
+        donorAddress: publicKey,
+        amountXLM: donationAmount.toFixed(7),
+        amount: donationAmount.toFixed(7),
+        currency: 'XLM',
+        message: message.trim() || undefined,
+        transactionHash,
+      });
+
+      setStatusType('success');
+      setStatusMessage(`Donation successful! Transaction hash: ${transactionHash}`);
+      setAmount('1');
+      setMessage('');
+      setSecretKey('');
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to build transaction');
+      console.error('Donation failed:', error);
+      setStatusType('error');
+      setStatusMessage(
+        error?.response?.data?.message || error?.message || 'Donation failed. Please try again.'
+      );
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
   const connectWallet = async () => {
-    // For mobile, we'll use a simple input for now
-    // In production, integrate with Freighter mobile SDK
     Alert.alert(
       'Connect Wallet',
       'Enter your Stellar public key:',
@@ -116,8 +165,9 @@ export default function DonateScreen() {
         {
           text: 'OK',
           onPress: (input: any) => {
-            if (input && /^G[A-Z0-9]{55}$/.test(input)) {
-              setPublicKey(input);
+            const trimmed = String(input || '').trim();
+            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
+              setPublicKey(trimmed);
             } else {
               Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');
             }
@@ -128,10 +178,11 @@ export default function DonateScreen() {
     );
   };
 
-  if (!project) {
+  if (loading) {
     return (
       <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading project...</Text>
+        <ActivityIndicator size="large" color="#227239" />
+        <Text style={styles.loadingText}>Loading donation details...</Text>
       </View>
     );
   }
@@ -139,82 +190,101 @@ export default function DonateScreen() {
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Donate to {project.name}</Text>
-        <Text style={styles.subtitle}>100% goes directly to the project</Text>
+        <Text style={styles.title}>Donate to {selectedProject?.name || 'a project'}</Text>
+        <Text style={styles.subtitle}>Choose a project and donate XLM on testnet.</Text>
+      </View>
+
+      <View style={styles.selectorCard}>
+        <Text style={styles.sectionTitle}>Select a project</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.projectList}>
+          {projects.map((project) => (
+            <TouchableOpacity
+              key={project.id}
+              style={[
+                styles.projectOption,
+                project.id === selectedProjectId && styles.projectOptionActive,
+              ]}
+              onPress={() => setSelectedProjectId(project.id)}
+            >
+              <Text
+                style={[
+                  styles.projectOptionText,
+                  project.id === selectedProjectId && styles.projectOptionTextActive,
+                ]}
+              >
+                {project.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
       {!publicKey ? (
-        <TouchableOpacity style={styles.connectButton} onPress={connectWallet}>
-          <Text style={styles.connectButtonText}>Connect Wallet</Text>
+        <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
+          onPress={connectWallet}
+        >
+          <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
         </TouchableOpacity>
       ) : (
         <View style={styles.walletCard}>
-          <Text style={styles.walletLabel}>Connected as:</Text>
+          <Text style={styles.walletLabel}>Connected wallet</Text>
           <Text style={styles.walletAddress}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
         </View>
       )}
 
       <View style={styles.card}>
-        <Text style={styles.label}>Currency</Text>
-        <View style={styles.currencySelector}>
-          <TouchableOpacity
-            style={[styles.currencyButton, currency === 'XLM' && styles.currencyButtonActive]}
-            onPress={() => setCurrency('XLM')}
-          >
-            <Text style={[styles.currencyButtonText, currency === 'XLM' && styles.currencyButtonTextActive]}>
-              XLM
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.currencyButton, currency === 'USDC' && styles.currencyButtonActive]}
-            onPress={() => setCurrency('USDC')}
-          >
-            <Text style={[styles.currencyButtonText, currency === 'USDC' && styles.currencyButtonTextActive]}>
-              USDC
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.label}>Amount ({currency})</Text>
+        <Text style={styles.label}>Amount (XLM)</Text>
         <TextInput
           style={styles.input}
-          placeholder="Enter amount..."
+          placeholder="1.00"
           value={amount}
           onChangeText={setAmount}
           keyboardType="decimal-pad"
         />
 
-        <View style={styles.presets}>
-          {['5', '10', '25', '50', '100'].map(preset => (
-            <TouchableOpacity
-              key={preset}
-              style={[styles.presetButton, amount === preset && styles.presetButtonActive]}
-              onPress={() => setAmount(preset)}
-            >
-              <Text style={[styles.presetButtonText, amount === preset && styles.presetButtonTextActive]}>
-                {preset} {currency}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <Text style={styles.label}>Message (optional)</Text>
+        <Text style={styles.label}>Secret Key</Text>
         <TextInput
           style={styles.input}
+          placeholder="S..."
+          value={secretKey}
+          onChangeText={setSecretKey}
+          autoCapitalize="none"
+          secureTextEntry
+        />
+
+        <Text style={[styles.label, { color: colors.primaryText }]}>Message (optional)</Text>
+        <TextInput
+          style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
           placeholder="Leave a message of support..."
+          placeholderTextColor={colors.placeholder}
           value={message}
           onChangeText={setMessage}
           maxLength={100}
         />
       </View>
 
+      {statusMessage ? (
+        <View
+          style={[
+            styles.statusBox,
+            statusType === 'success'
+              ? styles.successBox
+              : statusType === 'error'
+              ? styles.errorBox
+              : styles.infoBox,
+          ]}
+        >
+          <Text style={styles.statusText}>{statusMessage}</Text>
+        </View>
+      ) : null}
+
       <TouchableOpacity
-        style={[styles.donateButton, loading && styles.donateButtonDisabled]}
+        style={[styles.donateButton, (submitting || !publicKey) && styles.donateButtonDisabled]}
         onPress={handleDonate}
-        disabled={loading}
+        disabled={submitting || !publicKey}
       >
         <Text style={styles.donateButtonText}>
-          {loading ? 'Building...' : `🌱 Donate ${amount || currency}`}
+          {submitting ? 'Sending donation...' : `🌱 Donate ${amount || '1'} XLM`}
         </Text>
       </TouchableOpacity>
     </ScrollView>
@@ -224,135 +294,140 @@ export default function DonateScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f7f0',
   },
   loadingText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
-    marginTop: 40,
+    marginTop: 16,
   },
   header: {
     padding: 24,
-    backgroundColor: '#227239',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
   },
   subtitle: {
     fontSize: 14,
-    color: '#e8f3e8',
     marginTop: 4,
   },
-  connectButton: {
-    backgroundColor: '#227239',
-    padding: 16,
+  selectorCard: {
     margin: 16,
+    padding: 16,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 12,
+    color: '#1f5136',
+  },
+  projectList: {
+    flexDirection: 'row',
+  },
+  projectOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: '#f0f7f0',
+    marginRight: 10,
+  },
+  projectOptionActive: {
+    backgroundColor: '#227239',
+  },
+  projectOptionText: {
+    color: '#1f5136',
+    fontSize: 14,
+  },
+  projectOptionTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  connectButton: {
+    padding: 16,
+    marginHorizontal: 16,
+    marginTop: 8,
     borderRadius: 12,
     alignItems: 'center',
   },
   connectButtonText: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
   walletCard: {
     margin: 16,
     padding: 16,
-    backgroundColor: '#fff',
     borderRadius: 12,
-    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#d1e7d1',
   },
   walletLabel: {
     fontSize: 12,
-    color: '#8aaa8a',
+    color: '#6b8f6b',
   },
   walletAddress: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#227239',
+    fontWeight: '700',
+    color: '#1f5136',
     marginTop: 4,
   },
   card: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a2e1a',
     marginBottom: 8,
-  },
-  currencySelector: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  currencyButton: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#f0f7f0',
-    alignItems: 'center',
-  },
-  currencyButtonActive: {
-    backgroundColor: '#227239',
-  },
-  currencyButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#5a7a5a',
-  },
-  currencyButtonTextActive: {
-    color: '#fff',
   },
   input: {
     borderWidth: 1,
-    borderColor: '#e8f3e8',
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
     marginBottom: 16,
   },
-  presets: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+  statusBox: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    padding: 14,
+    borderRadius: 12,
   },
-  presetButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f0f7f0',
+  successBox: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#34d399',
+    borderWidth: 1,
   },
-  presetButtonActive: {
-    backgroundColor: '#227239',
+  errorBox: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#f87171',
+    borderWidth: 1,
   },
-  presetButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#5a7a5a',
+  infoBox: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#60a5fa',
+    borderWidth: 1,
   },
-  presetButtonTextActive: {
-    color: '#fff',
+  statusText: {
+    color: '#0f172a',
   },
   donateButton: {
-    backgroundColor: '#227239',
     padding: 16,
     margin: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
   donateButtonDisabled: {
-    opacity: 0.6,
+    backgroundColor: '#8aaa8a',
   },
   donateButtonText: {
-    color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
   },

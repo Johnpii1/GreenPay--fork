@@ -15,7 +15,13 @@ const pool = require("../db/pool");
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
 const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
-const server = new Server(HORIZON_URL);
+let server;
+function getServer() {
+  if (!server) {
+    server = new Server(HORIZON_URL);
+  }
+  return server;
+}
 
 /**
  * Turrets txFunction entry point for matching donations
@@ -158,7 +164,7 @@ async function submitMatchingPayment({
 }) {
   try {
     // Load the matcher account
-    const matcherAccount = await server.loadAccount(matcherAddress);
+    const matcherAccount = await getServer().loadAccount(matcherAddress);
 
     // Build the payment transaction
     const transaction = new TransactionBuilder(matcherAccount, {
@@ -195,7 +201,7 @@ async function submitMatchingPayment({
     transaction.sign(require("@stellar/stellar-sdk").Keypair.fromSecret(matcherSecret));
 
     // Submit to Horizon
-    const result = await server.submitTransaction(transaction);
+    const result = await getServer().submitTransaction(transaction);
 
     console.log(`Matching payment submitted: ${result.hash}`);
 
@@ -234,7 +240,7 @@ async function generatePreSignedTransactions({
     if (matchAmount <= 0) continue;
 
     try {
-      const account = await server.loadAccount(matcherAddress);
+      const account = await getServer().loadAccount(matcherAddress);
       
       const tx = new TransactionBuilder(account, {
         fee: "100",

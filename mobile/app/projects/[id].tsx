@@ -6,6 +6,7 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-nati
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 
@@ -25,14 +26,48 @@ interface ClimateProject {
 }
 
 export default function ProjectDetailScreen() {
+  const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
   const [project, setProject] = useState<ClimateProject | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+  const [followLoading, setFollowLoading] = useState(false);
 
   useEffect(() => {
-    if (id) loadProject(id as string);
+    if (id) {
+      loadProject(id as string);
+      initializeNotifications();
+    }
   }, [id]);
+
+  const initializeNotifications = async () => {
+    try {
+      const token = await getPushToken();
+      if (token) {
+        setPushToken(token);
+        // Check if already following this project
+        checkFollowStatus(id as string, token);
+      }
+    } catch (error) {
+      console.error('Error initializing notifications:', error);
+    }
+  };
+
+  const checkFollowStatus = async (projectId: string, token: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
+      const data = await response.json();
+      if (data.success) {
+        const followedProjects = data.data;
+        const isFollowed = followedProjects.some((p: any) => p.id === projectId);
+        setIsFollowing(isFollowed);
+      }
+    } catch (error) {
+      console.error('Error checking follow status:', error);
+    }
+  };
 
   const loadProject = async (projectId: string) => {
     try {
@@ -45,6 +80,25 @@ export default function ProjectDetailScreen() {
     }
   };
 
+  const handleToggleFollow = async () => {
+    if (!pushToken || !project) return;
+
+    setFollowLoading(true);
+    try {
+      if (isFollowing) {
+        await unfollowProject(project.id, pushToken);
+        setIsFollowing(false);
+      } else {
+        await followProject(project.id, pushToken);
+        setIsFollowing(true);
+      }
+    } catch (error) {
+      console.error('Error toggling follow:', error);
+    } finally {
+      setFollowLoading(false);
+    }
+  };
+
   const progressPercent = (raised: string, goal: string) => {
     const r = parseFloat(raised);
     const g = parseFloat(goal);
@@ -54,73 +108,85 @@ export default function ProjectDetailScreen() {
 
   if (loading) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading project...</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+        <Text style={[styles.loadingText, { color: colors.secondaryText }]}>Loading project...</Text>
       </View>
     );
   }
 
   if (!project) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>Project not found</Text>
+      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+        <Text style={[styles.errorText, { color: colors.secondaryText }]}>Project not found</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.category}>{project.category}</Text>
-        <Text style={styles.name}>{project.name}</Text>
-        <Text style={styles.location}>📍 {project.location}</Text>
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View style={[styles.header, { backgroundColor: colors.primary }]}> 
+        <Text style={[styles.category, { color: colors.headerText }]}>{project.category}</Text>
+        <Text style={[styles.name, { color: colors.headerText }]}>{project.name}</Text>
+        <Text style={[styles.location, { color: colors.headerText }]}>📍 {project.location}</Text>
       </View>
 
-      <View style={styles.statsCard}>
+      <View style={[styles.statsCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
         <View style={styles.statRow}>
           <View style={styles.stat}>
-            <Text style={styles.statValue}>{parseFloat(project.raisedXLM).toFixed(2)}</Text>
-            <Text style={styles.statLabel}>XLM Raised</Text>
+            <Text style={[styles.statValue, { color: colors.accent }]}>{parseFloat(project.raisedXLM).toFixed(2)}</Text>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>XLM Raised</Text>
           </View>
           <View style={styles.stat}>
-            <Text style={styles.statValue}>{project.donorCount}</Text>
-            <Text style={styles.statLabel}>Donors</Text>
+            <Text style={[styles.statValue, { color: colors.accent }]}>{project.donorCount}</Text>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>Donors</Text>
           </View>
           <View style={styles.stat}>
-            <Text style={styles.statValue}>{project.co2OffsetKg.toFixed(0)}</Text>
-            <Text style={styles.statLabel}>kg CO₂</Text>
+            <Text style={[styles.statValue, { color: colors.accent }]}>{project.co2OffsetKg.toFixed(0)}</Text>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>kg CO₂</Text>
           </View>
         </View>
       </View>
 
-      <View style={styles.progressCard}>
-        <Text style={styles.progressTitle}>Fundraising Progress</Text>
-        <View style={styles.progressBar}>
+      <View style={[styles.progressCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+        <Text style={[styles.progressTitle, { color: colors.primaryText }]}>Fundraising Progress</Text>
+        <View style={[styles.progressBar, { backgroundColor: colors.border }]}> 
           <View
             style={[
               styles.progressFill,
-              { width: `${progressPercent(project.raisedXLM, project.goalXLM)}%` }
+              { width: `${progressPercent(project.raisedXLM, project.goalXLM)}%`, backgroundColor: colors.primary }
             ]}
           />
         </View>
-        <Text style={styles.progressText}>
+        <Text style={[styles.progressText, { color: colors.secondaryText }]}> 
           {progressPercent(project.raisedXLM, project.goalXLM)}% complete
         </Text>
-        <Text style={styles.goalText}>
+        <Text style={[styles.goalText, { color: colors.muted }]}> 
           Goal: {parseFloat(project.goalXLM).toFixed(2)} XLM
         </Text>
       </View>
 
-      <View style={styles.descriptionCard}>
-        <Text style={styles.sectionTitle}>About this project</Text>
-        <Text style={styles.description}>{project.description}</Text>
+      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+        <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>About this project</Text>
+        <Text style={[styles.description, { color: colors.secondaryText }]}>{project.description}</Text>
       </View>
 
+      {pushToken && (
+        <TouchableOpacity
+          style={[styles.followButton, isFollowing && styles.followButtonActive]}
+          onPress={handleToggleFollow}
+          disabled={followLoading}
+        >
+          <Text style={styles.followButtonText}>
+            {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity
-        style={styles.donateButton}
+        style={[styles.donateButton, { backgroundColor: colors.buttonBackground }]}
         onPress={() => router.push(`/donate/${project.id}`)}
       >
-        <Text style={styles.donateButtonText}>🌱 Donate Now</Text>
+        <Text style={[styles.donateButtonText, { color: colors.buttonText }]}>🌱 Donate Now</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -129,51 +195,43 @@ export default function ProjectDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f7f0',
   },
   loadingText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
     marginTop: 40,
   },
   errorText: {
     fontSize: 18,
-    color: '#5a7a5a',
     textAlign: 'center',
     marginTop: 40,
   },
   header: {
     padding: 24,
-    backgroundColor: '#227239',
   },
   category: {
     fontSize: 14,
-    color: '#e8f3e8',
     textTransform: 'uppercase',
     fontWeight: '600',
   },
   name: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
     marginTop: 8,
   },
   location: {
     fontSize: 14,
-    color: '#e8f3e8',
     marginTop: 4,
   },
   statsCard: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    borderWidth: 1,
   },
   statRow: {
     flexDirection: 'row',
@@ -185,83 +243,88 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#227239',
   },
   statLabel: {
     fontSize: 12,
-    color: '#8aaa8a',
     marginTop: 4,
   },
   progressCard: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    borderWidth: 1,
   },
   progressTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#1a2e1a',
     marginBottom: 12,
   },
   progressBar: {
     height: 12,
-    backgroundColor: '#e8f3e8',
     borderRadius: 6,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#227239',
   },
   progressText: {
     fontSize: 14,
-    color: '#5a7a5a',
     marginTop: 8,
     textAlign: 'center',
   },
   goalText: {
     fontSize: 12,
-    color: '#8aaa8a',
     marginTop: 4,
     textAlign: 'center',
   },
   descriptionCard: {
     margin: 16,
     padding: 20,
-    backgroundColor: '#fff',
     borderRadius: 12,
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    borderWidth: 1,
   },
   sectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#1a2e1a',
     marginBottom: 8,
   },
   description: {
     fontSize: 14,
-    color: '#5a7a5a',
     lineHeight: 20,
   },
-  donateButton: {
+  followButton: {
+    backgroundColor: '#fff',
+    padding: 16,
+    margin: 16,
+    marginTop: 0,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#227239',
+  },
+  followButtonActive: {
     backgroundColor: '#227239',
+  },
+  followButtonText: {
+    color: '#227239',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  donateButton: {
     padding: 16,
     margin: 16,
     borderRadius: 12,
     alignItems: 'center',
   },
   donateButtonText: {
-    color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
   },

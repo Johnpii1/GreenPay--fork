@@ -2,6 +2,7 @@
  * components/ProjectRating.tsx
  */
 import { useState } from "react";
+import { csrfFetch } from "@/lib/api";
 
 interface ProjectRatingProps {
   projectId: string;
@@ -26,9 +27,8 @@ export default function ProjectRating({ projectId, projectName, donorAddress, on
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "/api"}/ratings`, {
+      const res = await csrfFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/ratings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, donorAddress, rating, review }),
       });
       if (!res.ok) throw new Error("Failed to submit rating");

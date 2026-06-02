@@ -17,7 +17,88 @@ const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000",
   headers: { "Content-Type": "application/json" },
   timeout: 10000,
+  withCredentials: true,
 });
+
+// All API routes are served under the versioned `/api/v1` prefix (issue #204).
+// Rewrite `/api/*` request paths to `/api/v1/*` from a single place so every
+// helper below stays on the unversioned path string.
+api.interceptors.request.use((config) => {
+  if (config.url && config.url.startsWith("/api/") && !config.url.startsWith("/api/v1/")) {
+    config.url = config.url.replace(/^\/api\//, "/api/v1/");
+  }
+  return config;
+});
+
+let csrfToken: string | null = null;
+
+async function refreshCsrfToken() {
+  const { data } = await api.get<{ success: boolean; csrfToken: string }>(
+    "/api/csrf-token",
+  );
+  csrfToken = data.csrfToken;
+  return csrfToken;
+}
+
+api.interceptors.request.use(async (config) => {
+  const method = config.method?.toUpperCase();
+  const isMutating = method && ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+
+  if (isMutating) {
+    if (!csrfToken) {
+      await refreshCsrfToken();
+    }
+
+    if (csrfToken) {
+      config.headers = {
+        ...config.headers,
+        "X-CSRF-Token": csrfToken,
+      };
+    }
+  }
+
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 403 && !error.config.__csrfRetry) {
+      error.config.__csrfRetry = true;
+      csrfToken = null;
+      await refreshCsrfToken();
+      if (csrfToken) {
+        error.config.headers = {
+          ...error.config.headers,
+          "X-CSRF-Token": csrfToken,
+        };
+        return api.request(error.config);
+      }
+    }
+
+    return Promise.reject(error);
+  },
+);
+
+export async function csrfFetch(input: RequestInfo, init: RequestInit = {}) {
+  const method = init.method?.toUpperCase() || "GET";
+  const needsToken = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+
+  if (needsToken) {
+    if (!csrfToken) {
+      await refreshCsrfToken();
+    }
+
+    init.headers = {
+      ...(init.headers as Record<string, string>),
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken ?? "",
+    };
+    init.credentials = "include";
+  }
+
+  return fetch(input, init);
+}
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 export async function fetchProjects(params?: {
@@ -391,6 +472,40 @@ export async function fetchImpactGlobal(): Promise<ImpactGlobalStats> {
 export async function fetchImpactDonor(publicKey: string): Promise<ImpactDonorStats> {
   const { data } = await api.get<{ success: boolean; data: ImpactDonorStats }>(
     `/api/impact/donor/${publicKey}`,
+  );
+  return data.data;
+}
+
+export interface SubmitProjectPayload {
+  name: string;
+  category: string;
+  description: string;
+  location: string;
+  goalXLM: string;
+  walletAddress: string;
+  organization: {
+    name: string;
+    website: string;
+    country: string;
+    contactEmail: string;
+  };
+  co2Methodology: {
+    name: string;
+    verificationBody: string;
+    annualTonnesCO2: string;
+    documentUrl: string;
+  };
+}
+
+export interface SubmitProjectResponse {
+  id: string;
+  reviewTimeline: string;
+}
+
+export async function submitProject(payload: SubmitProjectPayload): Promise<SubmitProjectResponse> {
+  const { data } = await api.post<{ success: boolean; data: SubmitProjectResponse }>(
+    "/api/projects",
+    payload,
   );
   return data.data;
 }

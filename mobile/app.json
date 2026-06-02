@@ -23,14 +23,30 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#227239"
       },
-      "package": "com.stellargreenpay.app"
+      "package": "com.stellargreenpay.app",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [{ "scheme": "greenpay" }],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#227239",
+          "sounds": []
+        }
+      ]
     ],
-    "scheme": "stellargreenpay"
+    "scheme": "greenpay"
   }
 }
