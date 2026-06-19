@@ -1,0 +1,115 @@
+# Deployment: greenpay-summary-worker
+#
+# This is a dedicated AI summary worker that runs the pg-boss "ai-summary"
+# queue processor, separated from the main API server so the two can be
+# scaled and scheduled independently.
+#
+# The worker is annotated to use the greenpay-scheduler for hardware-aware
+# placement.  For the initial deployment (Claude API, no local GPU), it is
+# classified as "ml-batch" with no GPU requirement so it lands on high-CPU
+# nodes.  When a local model is deployed, change the annotations to add
+# gpu-vendor-req and gpu-vram-min-mib.
+#
+# Scheduler annotations on this pod:
+#   greenpay.io/workload-type    = ml-batch
+#   greenpay.io/bin-pack-weight  = 1.2     (slightly prefer consolidation)
+#   greenpay.io/network-bw-min-gbps = 10  (needs internet access for Claude API)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: summary-worker
+  namespace: greenpay
+  labels:
+    app: summary-worker
+    app.kubernetes.io/component: ml-worker
+    app.kubernetes.io/part-of: greenpay
+spec:
+  # One replica per queue worker.  Scale this horizontally to handle burst
+  # summary generation.  Each replica runs a pg-boss teamSize=2 worker so
+  # each replica handles 2 concurrent jobs.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: summary-worker
+  template:
+    metadata:
+      labels:
+        app: summary-worker
+        app.kubernetes.io/component: ml-worker
+      annotations:
+        # ── GreenPay scheduler annotations ──────────────────────────────────
+        # Tell the greenpay-scheduler what hardware this workload needs.
+        greenpay.io/workload-type: "ml-batch"
+        # No GPU required — all inference is via Anthropic's external API.
+        # When migrating to a local model, set:
+        #   greenpay.io/gpu-vendor-req: "nvidia"
+        #   greenpay.io/gpu-vram-min-mib: "24576"
+        greenpay.io/gpu-vendor-req: "none"
+        # Require adequate network bandwidth for Claude API calls.
+        greenpay.io/network-bw-min-gbps: "10"
+        # Slightly prefer consolidation to leave GPU nodes free.
+        greenpay.io/bin-pack-weight: "1.2"
+    spec:
+      # ── Use the GreenPay custom scheduler ───────────────────────────────
+      schedulerName: greenpay-scheduler
+
+      serviceAccountName: default
+
+      # Spread workers across zones for resilience.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: greenpay.io/network-zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: summary-worker
+
+      # Prefer CPU-optimised nodes (leave GPU nodes for training/inference).
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: greenpay.io/node-tier
+                    operator: In
+                    values: ["cpu-high", "cpu-standard"]
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: summary-worker
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: summary-worker
+          image: greenpay/backend:latest
+          imagePullPolicy: IfNotPresent
+          # Override the default CMD to run only the summary worker entrypoint.
+          command: ["node", "src/workers/summary-worker.js"]
+          envFrom:
+            - configMapRef:
+                name: greenpay-config
+            - secretRef:
+                name: greenpay-secrets
+          env:
+            - name: WORKER_MODE
+              value: "summary-only"
+          resources:
+            # CPU-bound: text tokenisation + HTTP calls to Anthropic API.
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          # No inbound ports — the worker only polls and makes outbound calls.
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "require('./src/workers/healthcheck.js')"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3

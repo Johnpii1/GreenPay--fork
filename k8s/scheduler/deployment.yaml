@@ -1,0 +1,184 @@
+# Deployment for the GreenPay custom scheduler.
+#
+# Runs 2 replicas with leader-election so we always have a hot standby
+# without double-scheduling (only the leader does the actual scheduling).
+#
+# The scheduler config is mounted from a ConfigMap so it can be updated
+# without rebuilding the image.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: greenpay-scheduler-config
+  namespace: greenpay-scheduler
+  labels:
+    app.kubernetes.io/name: greenpay-scheduler
+    app.kubernetes.io/component: scheduler
+data:
+  # Inline the scheduler config (see k8s/scheduler/config.yaml for the
+  # human-readable version; this is embedded here for single-apply convenience).
+  scheduler-config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 15s
+      renewDeadline: 10s
+      retryPeriod: 2s
+      resourceNamespace: greenpay-scheduler
+      resourceName: greenpay-scheduler-leader
+    clientConnection:
+      qps: 100
+      burst: 200
+    profiles:
+      - schedulerName: greenpay-scheduler
+        plugins:
+          filter:
+            enabled:
+              - name: NodeResourcesFit
+              - name: NodeAffinity
+              - name: TaintToleration
+              - name: NodeUnschedulable
+              - name: VolumeBinding
+              - name: GPUHardwareFilter
+          preScore:
+            enabled:
+              - name: MLWorkloadScore
+          score:
+            disabled:
+              - name: NodeResourcesBalancedAllocation
+            enabled:
+              - name: NodeResourcesFit
+              - name: MLWorkloadScore
+        pluginConfig:
+          - name: NodeResourcesFit
+            args:
+              scoringStrategy:
+                type: LeastAllocated
+                resources:
+                  - name: cpu
+                    weight: 1
+                  - name: memory
+                    weight: 1
+          - name: MLWorkloadScore
+            args: {}
+          - name: GPUHardwareFilter
+            args: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: greenpay-scheduler
+  namespace: greenpay-scheduler
+  labels:
+    app.kubernetes.io/name: greenpay-scheduler
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  # Two replicas — leader-election ensures only one is active at a time.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: greenpay-scheduler
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: greenpay-scheduler
+        app.kubernetes.io/component: scheduler
+      annotations:
+        # Force a rollout when the config changes.
+        checksum/config: ""  # populated by Helm/kustomize hash transformer
+    spec:
+      serviceAccountName: greenpay-scheduler
+
+      # Schedule the scheduler itself on control-plane nodes to avoid
+      # circular dependency (the scheduler can't schedule itself).
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+        # Spread the two replicas across different nodes for availability.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: greenpay-scheduler
+              topologyKey: kubernetes.io/hostname
+
+      # The scheduler config is mounted as a file.
+      volumes:
+        - name: scheduler-config
+          configMap:
+            name: greenpay-scheduler-config
+
+      containers:
+        - name: greenpay-scheduler
+          image: greenpay/scheduler:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /greenpay-scheduler
+            - --config=/etc/kubernetes/scheduler-config.yaml
+            - --v=4
+          volumeMounts:
+            - name: scheduler-config
+              mountPath: /etc/kubernetes/scheduler-config.yaml
+              subPath: scheduler-config.yaml
+              readOnly: true
+          ports:
+            - name: metrics
+              containerPort: 10259
+              protocol: TCP
+            - name: healthz
+              containerPort: 10258
+              protocol: TCP
+
+          # Liveness: the scheduler exposes /healthz on port 10258.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534   # nobody
+            capabilities:
+              drop: ["ALL"]
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault

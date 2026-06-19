@@ -1,0 +1,248 @@
+# GreenPay ML-Aware Kubernetes Scheduler
+
+## Why a custom scheduler?
+
+The default `kube-scheduler` uses a generic scoring model based on CPU/memory
+utilisation.  For ML workloads that consume GPUs, require specific VRAM
+budgets, and benefit from NVLink interconnects or NUMA-local memory, the
+default model leaves expensive capacity stranded.
+
+Observed problems before this feature:
+- A 7B inference pod landing on an A100 node (wasting 73 GiB of idle VRAM) when T4 nodes were available.
+- A training job splitting across two nodes because the scheduler couldn't see that NVLink locality mattered.
+- CPU-only summary workers competing with GPU inference pods for the same physical node.
+
+The `greenpay-scheduler` runs **alongside** the default scheduler as a second
+profile.  Only pods that explicitly opt-in via `schedulerName: greenpay-scheduler`
+in their `spec` are handled by it — all other workloads continue to use
+`kube-scheduler`.
+
+---
+
+## Architecture
+
+```
+Pod (schedulerName: greenpay-scheduler)
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────┐
+│               Scheduling Framework Cycle                     │
+│                                                              │
+│  1. Filter Phase                                             │
+│     NodeResourcesFit  → removes nodes without CPU/memory    │
+│     NodeAffinity      → nodeSelector / affinityRules        │
+│     TaintToleration   → checks tolerations                  │
+│     NodeUnschedulable → skips cordoned nodes                 │
+│     VolumeBinding     → checks PVC availability             │
+│     GPUHardwareFilter → checks GPU vendor/model/VRAM/zone   │ ← custom
+│                                                              │
+│  2. PreScore Phase                                           │
+│     MLWorkloadScore.PreScore → computes cluster-wide        │ ← custom
+│                                max bandwidth (normaliser)   │
+│                                                              │
+│  3. Score Phase (per surviving node, 0–100)                  │
+│     NodeResourcesFit  (weight 1) → least-allocated tie-break │
+│     MLWorkloadScore   (weight 10) → composite ML score      │ ← custom
+│       A. BinPacking       (w=0.40) GPU density              │
+│       B. Fragmentation    (w=0.25) anti-fragmentation       │
+│       C. NUMATopology     (w=0.20) NUMA affinity            │
+│       D. NetworkBandwidth (w=0.15) bandwidth normalisation  │
+│                                                              │
+│  4. NormalizeScore Phase                                     │
+│     MLWorkloadScore.NormalizeScore → rescales to [0, 100]   │ ← custom
+│                                                              │
+│  5. Reserve / Bind → assigns pod to winning node            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Plugin reference
+
+### GPUHardwareFilter (Filter)
+
+Hard constraints.  A node is **removed from consideration** if any check fails.
+
+| Check | Pod annotation | Node label | Failure message |
+|---|---|---|---|
+| GPU vendor | `greenpay.io/gpu-vendor-req` | `greenpay.io/gpu-vendor` | vendor mismatch |
+| GPU model | `greenpay.io/gpu-model-req` | `greenpay.io/gpu-model` | model mismatch |
+| VRAM floor | `greenpay.io/gpu-vram-min-mib` | `greenpay.io/gpu-vram-mib` | VRAM too low |
+| Network zone | `greenpay.io/network-zone-req` | `greenpay.io/network-zone` | zone mismatch |
+| Bandwidth floor | `greenpay.io/network-bw-min-gbps` | `greenpay.io/network-bandwidth` | bandwidth too low |
+
+Set vendor to `"any"` or omit the annotation to skip vendor/model filtering.
+
+### MLWorkloadScore (PreScore + Score + NormalizeScore)
+
+Composite scoring across four dimensions.
+
+**A. BinPacking (weight 0.40)**
+
+Rewards nodes already running ML pods so GPU capacity is packed tightly.
+Score = `(usedCPU / totalCPU) × 100` (CPU used as proxy for general node
+pressure; GPU-specific density requires DCGM metrics).
+
+**B. Fragmentation (weight 0.25)**
+
+Penalises nodes in the "dangerous middle" of GPU allocation — nearly full but
+not enough room for a new training job.
+
+- NVLink nodes: +85 (prefer for training consolidation)
+- PCIe nodes: +70 (prefer for inference)
+- Unknown: 50 (neutral)
+
+**C. NUMATopology (weight 0.20)**
+
+| Workload type | Strategy |
+|---|---|
+| `ml-training` | Prefer multi-NUMA (more memory buses = better distributed training) |
+| `ml-inference` | Prefer single-NUMA (low-latency hot-path) |
+| `ml-batch` / `api` / `db` | Neutral (50) |
+
+**D. NetworkBandwidth (weight 0.15)**
+
+Normalises node bandwidth against cluster maximum.  Score = `(nodeBW / clusterMaxBW) × 100`.
+
+**BinPackWeight multiplier**
+
+The pod annotation `greenpay.io/bin-pack-weight` (default `1.0`) multiplies
+the final composite score.  Use `>1.0` to aggressively consolidate; use `<1.0`
+to spread replicas across nodes.
+
+---
+
+## Node labels
+
+Apply these labels to your nodes with `kubectl label node <name> <key>=<value>`.
+
+| Label | Values | Example |
+|---|---|---|
+| `greenpay.io/gpu-vendor` | `nvidia`, `amd`, `google`, `none` | `nvidia` |
+| `greenpay.io/gpu-model` | `a100`, `h100`, `v100`, `t4`, `l4`, `tpu-v4` | `a100` |
+| `greenpay.io/gpu-count` | Integer string | `8` |
+| `greenpay.io/gpu-vram-mib` | Integer string (MiB) | `81920` |
+| `greenpay.io/gpu-interconnect` | `nvlink`, `pcie`, `none` | `nvlink` |
+| `greenpay.io/numa-nodes` | Integer string | `2` |
+| `greenpay.io/network-zone` | Zone name | `zone-a` |
+| `greenpay.io/network-bandwidth` | Integer string (Gbps) | `100` |
+| `greenpay.io/node-tier` | `gpu-high`, `gpu-low`, `cpu-high`, `cpu-standard` | `gpu-high` |
+
+See `k8s/ml-workloads/node-labels.yaml` for full example commands.
+
+---
+
+## Pod annotations
+
+Add these to `spec.template.metadata.annotations` in your workload manifests.
+
+| Annotation | Type | Default | Description |
+|---|---|---|---|
+| `greenpay.io/workload-type` | string | `api` | Workload class for scoring strategy |
+| `greenpay.io/gpu-vendor-req` | string | `any` | Required GPU vendor |
+| `greenpay.io/gpu-model-req` | string | `any` | Required GPU model |
+| `greenpay.io/gpu-vram-min-mib` | integer string | `0` | Minimum per-GPU VRAM |
+| `greenpay.io/network-zone-req` | string | `""` | Required network zone |
+| `greenpay.io/network-bw-min-gbps` | integer string | `0` | Minimum bandwidth |
+| `greenpay.io/bin-pack-weight` | float string | `1.0` | Score multiplier |
+
+Also set `spec.schedulerName: greenpay-scheduler` in your PodSpec.
+
+---
+
+## Deployment
+
+### 1. Label your nodes
+
+```bash
+kubectl label node gpu-node-01 \
+  greenpay.io/gpu-vendor=nvidia \
+  greenpay.io/gpu-model=a100 \
+  greenpay.io/gpu-count=8 \
+  greenpay.io/gpu-vram-mib=81920 \
+  greenpay.io/gpu-interconnect=nvlink \
+  greenpay.io/numa-nodes=2 \
+  greenpay.io/network-zone=zone-a \
+  greenpay.io/network-bandwidth=100 \
+  greenpay.io/node-tier=gpu-high
+```
+
+### 2. Build and push the scheduler image
+
+```bash
+cd scheduler/
+docker build -t greenpay/scheduler:1.0.0 .
+docker push greenpay/scheduler:1.0.0
+```
+
+### 3. Deploy scheduler infrastructure
+
+```bash
+kubectl apply -k k8s/scheduler/
+```
+
+Verify the scheduler pods start:
+```bash
+kubectl get pods -n greenpay-scheduler
+# NAME                                  READY   STATUS    RESTARTS   AGE
+# greenpay-scheduler-6c9d8b7c5f-abcde   1/1     Running   0          30s
+# greenpay-scheduler-6c9d8b7c5f-fghij   1/1     Running   0          30s
+```
+
+### 4. Deploy ML workloads
+
+```bash
+kubectl apply -k k8s/
+```
+
+### 5. Verify scheduling decisions
+
+```bash
+# Check where a pod was placed and why
+kubectl describe pod <summary-worker-pod-name> -n greenpay \
+  | grep -A 20 "Events:"
+
+# Check scheduler logs
+kubectl logs -n greenpay-scheduler -l app.kubernetes.io/name=greenpay-scheduler \
+  --tail=100 | grep -E "Score|Filter|placed"
+```
+
+---
+
+## Upgrading
+
+The scheduler binary runs as a Deployment.  Rolling updates work the same
+as any other Deployment — update the image tag and apply:
+
+```bash
+kubectl set image deployment/greenpay-scheduler \
+  greenpay-scheduler=greenpay/scheduler:1.1.0 \
+  -n greenpay-scheduler
+```
+
+Leader-election ensures scheduling continuity during the rollout.
+
+---
+
+## Troubleshooting
+
+**Pod stays Pending with "0/N nodes are available"**
+
+Run `kubectl describe pod <name>` and check the `Events` section.  The
+`GPUHardwareFilter` will include a human-readable reason in the event.
+
+Common causes:
+- No node has the required GPU vendor/model — check node labels.
+- VRAM floor is too high for all labelled nodes.
+- Network zone requirement doesn't match any node's zone label.
+
+**Scheduler pods are not starting**
+
+Check RBAC: `kubectl auth can-i get pods --as=system:serviceaccount:greenpay-scheduler:greenpay-scheduler`
+
+Check logs: `kubectl logs -n greenpay-scheduler deployment/greenpay-scheduler`
+
+**Pod lands on wrong node**
+
+Increase the scheduler log verbosity (`--v=5`) to see per-node scores.
+The `MLWorkloadScore` plugin logs `Score: computed` with all four sub-scores.

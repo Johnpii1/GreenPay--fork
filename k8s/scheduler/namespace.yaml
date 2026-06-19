@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: greenpay-scheduler
+  labels:
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/part-of: greenpay
