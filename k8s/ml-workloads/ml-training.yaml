@@ -1,0 +1,154 @@
+# Job: greenpay-model-training
+#
+# Kubernetes Job template for fine-tuning ML models on GreenPay data.
+# This is run periodically (e.g. monthly) via a CronJob or triggered by the
+# admin API.
+#
+# Scheduler annotations for the greenpay-scheduler:
+#   - GPU vendor: nvidia (A100 required for efficient BF16 training)
+#   - GPU model: a100
+#   - VRAM: 80 GiB per GPU (full A100 80GB)
+#   - Interconnect: nvlink preferred (scorer gives bonus)
+#   - Network: 100 Gbps (dataset loading from object storage)
+#   - NUMA: multi-NUMA preferred (scorer gives bonus for training)
+#   - Bin-pack weight: 1.5 (aggressively consolidate training onto fewest nodes)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: greenpay-model-training
+  namespace: greenpay
+  labels:
+    app: model-training
+    app.kubernetes.io/component: ml-training
+    app.kubernetes.io/part-of: greenpay
+spec:
+  # Parallelism: number of worker pods to run simultaneously.
+  # Completions: total completions needed (1 = single-run job).
+  parallelism: 1
+  completions: 1
+  backoffLimit: 2
+  # Clean up completed pods after 1 hour.
+  ttlSecondsAfterFinished: 3600
+
+  template:
+    metadata:
+      labels:
+        app: model-training
+        app.kubernetes.io/component: ml-training
+      annotations:
+        # ── GreenPay scheduler annotations ──────────────────────────────────
+        greenpay.io/workload-type: "ml-training"
+        # A100 required — training on T4 is 10× slower.
+        greenpay.io/gpu-vendor-req: "nvidia"
+        greenpay.io/gpu-model-req: "a100"
+        # 80 GiB VRAM floor — full A100 80GB.
+        greenpay.io/gpu-vram-min-mib: "81920"
+        # No zone pinning — let bandwidth score drive placement.
+        greenpay.io/network-zone-req: ""
+        # 100 Gbps for fast dataset loading.
+        greenpay.io/network-bw-min-gbps: "100"
+        # Aggressively bin-pack — training is the most expensive workload.
+        greenpay.io/bin-pack-weight: "1.5"
+    spec:
+      restartPolicy: OnFailure
+
+      # ── Use the GreenPay custom scheduler ───────────────────────────────
+      schedulerName: greenpay-scheduler
+
+      # Pin to A100 (gpu-high tier) nodes.
+      nodeSelector:
+        greenpay.io/node-tier: gpu-high
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      # No anti-affinity for training — we want to pack all GPUs on one node.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: greenpay.io/gpu-model
+                    operator: In
+                    values: ["a100"]
+                  - key: greenpay.io/gpu-interconnect
+                    operator: In
+                    values: ["nvlink"]
+
+      containers:
+        - name: trainer
+          image: greenpay/trainer:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - greenpay.train
+            - --config
+            - /config/training-config.yaml
+          envFrom:
+            - configMapRef:
+                name: greenpay-config
+            - secretRef:
+                name: greenpay-secrets
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0,1,2,3,4,5,6,7"  # use all 8 A100s
+            - name: NCCL_DEBUG
+              value: "WARN"
+            - name: OMP_NUM_THREADS
+              value: "8"
+          resources:
+            requests:
+              cpu: "32"
+              memory: "512Gi"
+              nvidia.com/gpu: "8"    # request all 8 GPUs on the A100 node
+            limits:
+              cpu: "64"
+              memory: "512Gi"
+              nvidia.com/gpu: "8"
+          volumeMounts:
+            - name: training-data
+              mountPath: /data
+            - name: model-output
+              mountPath: /output
+            - name: training-config
+              mountPath: /config
+              readOnly: true
+
+      volumes:
+        - name: training-data
+          persistentVolumeClaim:
+            claimName: greenpay-training-data
+        - name: model-output
+          persistentVolumeClaim:
+            claimName: greenpay-model-output
+        - name: training-config
+          configMap:
+            name: greenpay-training-config
+---
+# ConfigMap: training hyperparameters.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: greenpay-training-config
+  namespace: greenpay
+data:
+  training-config.yaml: |
+    model:
+      base: "meta-llama/Meta-Llama-3-8B"
+      output_dir: /output/greenpay-impact-v1
+    training:
+      epochs: 3
+      batch_size: 32
+      gradient_accumulation_steps: 4
+      learning_rate: 2.0e-5
+      warmup_ratio: 0.1
+      bf16: true          # A100 has native BF16 support
+      tf32: true
+      dataloader_num_workers: 8
+    data:
+      train_path: /data/impact_train.jsonl
+      eval_path: /data/impact_eval.jsonl

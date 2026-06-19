@@ -1,0 +1,89 @@
+# KubeSchedulerConfiguration for the GreenPay custom scheduler.
+#
+# This config tells the scheduler framework which plugins to enable and how
+# to weight the scoring dimensions for ML workload placement.
+#
+# Key design decisions
+# ─────────────────────
+# 1. We run as a *second* scheduler (schedulerName: greenpay-scheduler) so
+#    the default kube-scheduler continues handling non-ML workloads.  Only
+#    pods that explicitly opt-in with `schedulerName: greenpay-scheduler`
+#    in their PodSpec will be handled here.
+#
+# 2. The Filter extension point gets GPUHardwareFilter added LAST so the
+#    built-in filters (resource fit, taints, affinity) run first and give
+#    us a pre-screened candidate set — our filter focuses only on hardware.
+#
+# 3. The Score extension point adds MLWorkloadScore with a weight that makes
+#    it the dominant signal (weight=10) while keeping NodeResourcesFit's
+#    LeastAllocated at a lower weight (weight=2) so we don't fight each other.
+---
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: true
+  leaseDuration: 15s
+  renewDeadline: 10s
+  retryPeriod: 2s
+  resourceNamespace: greenpay-scheduler
+  resourceName: greenpay-scheduler-leader
+
+clientConnection:
+  qps: 100
+  burst: 200
+
+profiles:
+  - schedulerName: greenpay-scheduler
+
+    plugins:
+      # ── Filter plugins ─────────────────────────────────────────────────────
+      filter:
+        enabled:
+          # Built-in filters run first (resource fit, node affinity, etc.)
+          # then our hardware-specific filter runs last.
+          - name: NodeResourcesFit
+          - name: NodeAffinity
+          - name: TaintToleration
+          - name: NodeUnschedulable
+          - name: VolumeBinding
+          - name: GPUHardwareFilter   # ← our custom plugin
+
+      # ── PreScore plugins ───────────────────────────────────────────────────
+      preScore:
+        enabled:
+          - name: MLWorkloadScore     # runs PreScore to compute cluster max bandwidth
+
+      # ── Score plugins ──────────────────────────────────────────────────────
+      score:
+        disabled:
+          # Disable LeastAllocated so it doesn't fight our bin-packing scorer.
+          - name: NodeResourcesBalancedAllocation
+        enabled:
+          # Keep LeastRequestedPriority for non-GPU dimensions (low weight).
+          - name: NodeResourcesFit
+          # Our composite ML scorer (high weight — dominant signal).
+          - name: MLWorkloadScore
+
+    pluginConfig:
+      # NodeResourcesFit: use LeastAllocated mode at low weight to act as a
+      # tiebreaker for nodes with identical ML scores.
+      - name: NodeResourcesFit
+        args:
+          scoringStrategy:
+            type: LeastAllocated
+            resources:
+              - name: cpu
+                weight: 1
+              - name: memory
+                weight: 1
+
+      # MLWorkloadScore: weight 10 makes it the dominant factor.
+      # The plugin itself normalises its output to [0, 100] so this weight
+      # just adjusts the contribution relative to NodeResourcesFit (weight 1).
+      - name: MLWorkloadScore
+        args: {}
+
+      # GPUHardwareFilter: no configurable args — all requirements come from
+      # pod annotations at scheduling time.
+      - name: GPUHardwareFilter
+        args: {}

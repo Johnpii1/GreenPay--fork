@@ -1,0 +1,196 @@
+# Deployment: greenpay-ml-inference
+#
+# Template for a local ML inference service (e.g. a fine-tuned model for
+# impact scoring or fraud detection).
+#
+# This pod is annotated for the greenpay-scheduler with:
+#   - GPU vendor requirement: nvidia
+#   - GPU model preference: t4 (cost-effective for inference)
+#   - Minimum VRAM: 16 GiB (sufficient for 7B quantised models)
+#   - Network zone: no preference (latency-optimised by NUMA scoring)
+#   - NUMA preference: single-NUMA (inference prefers low-latency memory)
+#
+# Scale: Horizontal Pod Autoscaler driven by GPU utilisation metrics from
+# the NVIDIA DCGM exporter.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-inference
+  namespace: greenpay
+  labels:
+    app: ml-inference
+    app.kubernetes.io/component: ml-inference
+    app.kubernetes.io/part-of: greenpay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ml-inference
+  template:
+    metadata:
+      labels:
+        app: ml-inference
+        app.kubernetes.io/component: ml-inference
+      annotations:
+        # ── GreenPay scheduler annotations ──────────────────────────────────
+        # Workload type: inference → NUMA scorer prefers single-NUMA nodes.
+        greenpay.io/workload-type: "ml-inference"
+        # Require NVIDIA GPU (T4 or better).
+        greenpay.io/gpu-vendor-req: "nvidia"
+        # Accept any model — let the VRAM floor filter do the work.
+        greenpay.io/gpu-model-req: "any"
+        # 16 GiB minimum — supports 7B quantised models (GGUF Q4).
+        greenpay.io/gpu-vram-min-mib: "16384"
+        # No specific zone requirement — scheduler picks best NUMA topology.
+        greenpay.io/network-zone-req: ""
+        # 10 Gbps minimum for loading model weights from object storage.
+        greenpay.io/network-bw-min-gbps: "10"
+        # Bin-pack weight 0.8: slightly spread inference replicas for HA.
+        greenpay.io/bin-pack-weight: "0.8"
+    spec:
+      # ── Use the GreenPay custom scheduler ───────────────────────────────
+      schedulerName: greenpay-scheduler
+
+      # Require nodes with at least one GPU.
+      # Note: this is a belt-and-suspenders check.  The GPUHardwareFilter
+      # will also reject nodes with no GPU when gpu-vram-min-mib is set.
+      nodeSelector:
+        greenpay.io/node-tier: gpu-low  # T4 nodes
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      # Anti-affinity: spread inference replicas across GPU nodes.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ml-inference
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: inference-server
+          # Replace with your actual inference image (vLLM, TGI, Triton, etc.)
+          image: greenpay/inference-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: greenpay-config
+          env:
+            - name: MODEL_PATH
+              value: "/models/greenpay-impact-7b-q4"
+            - name: NUM_GPU_LAYERS
+              value: "32"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              # Request 1 GPU via the NVIDIA device plugin extended resource.
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60   # model loading takes time
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 30
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models
+              readOnly: true
+
+      volumes:
+        - name: model-storage
+          # Use a PVC backed by fast storage (NVMe SSD storage class).
+          # Replace with your actual model PVC name.
+          persistentVolumeClaim:
+            claimName: greenpay-model-storage
+            readOnly: true
+---
+# PersistentVolumeClaim for model weights.
+# Requires a ReadOnlyMany storage class (e.g. EFS, Azure Files, GCS FUSE).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: greenpay-model-storage
+  namespace: greenpay
+  labels:
+    app.kubernetes.io/component: ml-inference
+    app.kubernetes.io/part-of: greenpay
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: standard  # replace with your fast/NVMe storage class
+  resources:
+    requests:
+      storage: 50Gi
+---
+# Service for the inference server.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-inference-svc
+  namespace: greenpay
+  labels:
+    app: ml-inference
+spec:
+  selector:
+    app: ml-inference
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# HorizontalPodAutoscaler driven by GPU utilisation.
+# Requires NVIDIA DCGM exporter + prometheus-adapter.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-inference-hpa
+  namespace: greenpay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-inference
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    # Primary: GPU utilisation from DCGM exporter.
+    - type: Pods
+      pods:
+        metric:
+          name: dcgm_gpu_utilization
+        target:
+          type: AverageValue
+          averageValue: "70"  # scale up when GPU util > 70%
+    # Secondary: request queue depth (custom metric from backend).
+    - type: Object
+      object:
+        metric:
+          name: greenpay_inference_queue_depth
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: ml-inference-svc
+        target:
+          type: Value
+          value: "50"  # scale up when > 50 queued requests

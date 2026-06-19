@@ -1,0 +1,83 @@
+# Node labeling guide for GreenPay hardware-aware scheduling.
+#
+# This file documents the required labels and provides example `kubectl label`
+# commands.  It is NOT a Kubernetes manifest — it serves as operator runbook
+# documentation checked into version control.
+#
+# Apply labels to your actual nodes with:
+#   kubectl label node <node-name> <key>=<value>
+#
+# ── Example cluster topology ──────────────────────────────────────────────────
+#
+#   gpu-node-01, gpu-node-02   — 8× NVIDIA A100 80GB, NVLink, zone-a, 100Gbps
+#   gpu-node-03, gpu-node-04   — 4× NVIDIA T4 16GB,   PCIe,   zone-b, 25Gbps
+#   cpu-node-01 → cpu-node-10  — No GPU, 64 vCPU, 256 GiB RAM, zone-a/b, 10Gbps
+#
+# ── A100 nodes ────────────────────────────────────────────────────────────────
+#
+#   kubectl label node gpu-node-01 \
+#     greenpay.io/gpu-vendor=nvidia \
+#     greenpay.io/gpu-model=a100 \
+#     greenpay.io/gpu-count=8 \
+#     greenpay.io/gpu-vram-mib=81920 \
+#     greenpay.io/gpu-interconnect=nvlink \
+#     greenpay.io/numa-nodes=2 \
+#     greenpay.io/network-zone=zone-a \
+#     greenpay.io/network-bandwidth=100 \
+#     greenpay.io/node-tier=gpu-high
+#
+# ── T4 inference nodes ────────────────────────────────────────────────────────
+#
+#   kubectl label node gpu-node-03 \
+#     greenpay.io/gpu-vendor=nvidia \
+#     greenpay.io/gpu-model=t4 \
+#     greenpay.io/gpu-count=4 \
+#     greenpay.io/gpu-vram-mib=16384 \
+#     greenpay.io/gpu-interconnect=pcie \
+#     greenpay.io/numa-nodes=1 \
+#     greenpay.io/network-zone=zone-b \
+#     greenpay.io/network-bandwidth=25 \
+#     greenpay.io/node-tier=gpu-low
+#
+# ── CPU-only nodes ────────────────────────────────────────────────────────────
+#
+#   kubectl label node cpu-node-01 \
+#     greenpay.io/gpu-vendor=none \
+#     greenpay.io/gpu-count=0 \
+#     greenpay.io/numa-nodes=2 \
+#     greenpay.io/network-zone=zone-a \
+#     greenpay.io/network-bandwidth=10 \
+#     greenpay.io/node-tier=cpu-standard
+#
+# ── Verify labels ─────────────────────────────────────────────────────────────
+#
+#   kubectl get nodes -L greenpay.io/gpu-vendor,greenpay.io/gpu-model,greenpay.io/node-tier
+#
+# ── Note on GPU extended resources ────────────────────────────────────────────
+# If you use the NVIDIA device plugin, nodes automatically advertise
+# nvidia.com/gpu as an extended resource on node.status.capacity.
+# The resource request in pod containers should still use:
+#   resources:
+#     limits:
+#       nvidia.com/gpu: "1"
+# This is independent of the greenpay.io labels — the labels drive our
+# custom scheduling decisions (VRAM, model, topology) while the extended
+# resource is what actually grants access to the GPU device.
+---
+# This placeholder ConfigMap stores the label taxonomy version so tooling
+# can verify cluster label compatibility.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: greenpay-node-label-schema
+  namespace: greenpay
+  labels:
+    app.kubernetes.io/part-of: greenpay
+    app.kubernetes.io/component: scheduler
+data:
+  schema-version: "v1"
+  gpu-vendor-values: "nvidia,amd,google,none"
+  gpu-model-values: "a100,h100,v100,t4,l4,tpu-v4"
+  interconnect-values: "nvlink,pcie,none"
+  node-tier-values: "gpu-high,gpu-low,cpu-high,cpu-standard"
+  workload-type-values: "ml-training,ml-inference,ml-batch,api,db"

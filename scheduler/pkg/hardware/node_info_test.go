@@ -1,0 +1,238 @@
+package hardware_test
+
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/greenpay/scheduler/pkg/hardware"
+)
+
+// ── NodeHardware parsing tests ────────────────────────────────────────────────
+
+func TestParseNodeHardware_FullLabels(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gpu-node-1",
+			Labels: map[string]string{
+				hardware.LabelGPUVendor:          "nvidia",
+				hardware.LabelGPUModel:           "a100",
+				hardware.LabelGPUCount:           "8",
+				hardware.LabelGPUVRAMMiB:         "81920",
+				hardware.LabelGPUInterconnect:    "nvlink",
+				hardware.LabelNUMANodes:          "2",
+				hardware.LabelNetworkZone:        "zone-a",
+				hardware.LabelNetworkBandwidthGbps: "100",
+				hardware.LabelNodeTier:           "gpu-high",
+			},
+		},
+	}
+
+	hw := hardware.ParseNodeHardware(node)
+
+	if hw.GPUVendor != "nvidia" {
+		t.Errorf("GPUVendor: got %q, want %q", hw.GPUVendor, "nvidia")
+	}
+	if hw.GPUModel != "a100" {
+		t.Errorf("GPUModel: got %q, want %q", hw.GPUModel, "a100")
+	}
+	if hw.GPUCount != 8 {
+		t.Errorf("GPUCount: got %d, want 8", hw.GPUCount)
+	}
+	if hw.GPUVRAMMiB != 81920 {
+		t.Errorf("GPUVRAMMiB: got %d, want 81920", hw.GPUVRAMMiB)
+	}
+	if hw.GPUInterconnect != "nvlink" {
+		t.Errorf("GPUInterconnect: got %q, want %q", hw.GPUInterconnect, "nvlink")
+	}
+	if hw.NUMANodes != 2 {
+		t.Errorf("NUMANodes: got %d, want 2", hw.NUMANodes)
+	}
+	if hw.NetworkZone != "zone-a" {
+		t.Errorf("NetworkZone: got %q, want %q", hw.NetworkZone, "zone-a")
+	}
+	if hw.NetworkBandwidthGbps != 100 {
+		t.Errorf("NetworkBandwidthGbps: got %d, want 100", hw.NetworkBandwidthGbps)
+	}
+	if hw.NodeTier != "gpu-high" {
+		t.Errorf("NodeTier: got %q, want %q", hw.NodeTier, "gpu-high")
+	}
+}
+
+func TestParseNodeHardware_NoLabels_Defaults(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain-node"},
+	}
+
+	hw := hardware.ParseNodeHardware(node)
+
+	if hw.GPUVendor != hardware.GPUVendorNone {
+		t.Errorf("GPUVendor default: got %q, want %q", hw.GPUVendor, hardware.GPUVendorNone)
+	}
+	if hw.GPUCount != 0 {
+		t.Errorf("GPUCount default: got %d, want 0", hw.GPUCount)
+	}
+	if hw.NodeTier != hardware.NodeTierCPUStandard {
+		t.Errorf("NodeTier default: got %q, want %q", hw.NodeTier, hardware.NodeTierCPUStandard)
+	}
+}
+
+func TestNodeHardware_HasGPU(t *testing.T) {
+	cases := []struct {
+		name   string
+		hw     hardware.NodeHardware
+		wantGPU bool
+	}{
+		{"nvidia 8x A100", hardware.NodeHardware{GPUVendor: "nvidia", GPUCount: 8}, true},
+		{"vendor none", hardware.NodeHardware{GPUVendor: "none", GPUCount: 0}, false},
+		{"empty vendor", hardware.NodeHardware{GPUVendor: "", GPUCount: 0}, false},
+		{"count 0 with vendor", hardware.NodeHardware{GPUVendor: "nvidia", GPUCount: 0}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.hw.HasGPU()
+			if got != tc.wantGPU {
+				t.Errorf("HasGPU() = %v, want %v", got, tc.wantGPU)
+			}
+		})
+	}
+}
+
+func TestNodeHardware_TotalVRAMMiB(t *testing.T) {
+	hw := hardware.NodeHardware{GPUCount: 8, GPUVRAMMiB: 81920}
+	if hw.TotalVRAMMiB() != 655360 {
+		t.Errorf("TotalVRAMMiB: got %d, want 655360", hw.TotalVRAMMiB())
+	}
+}
+
+func TestNodeHardware_IsHighBandwidth(t *testing.T) {
+	hw := hardware.NodeHardware{NetworkBandwidthGbps: 100}
+	if !hw.IsHighBandwidth(100) {
+		t.Error("IsHighBandwidth(100): expected true for 100 Gbps node")
+	}
+	if hw.IsHighBandwidth(101) {
+		t.Error("IsHighBandwidth(101): expected false for 100 Gbps node")
+	}
+}
+
+// ── PodHardwareReqs parsing tests ────────────────────────────────────────────
+
+func TestParsePodHardwareReqs_FullAnnotations(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				hardware.AnnotWorkloadType:     "ml-training",
+				hardware.AnnotGPUVendorReq:     "nvidia",
+				hardware.AnnotGPUModelReq:      "a100",
+				hardware.AnnotGPUVRAMMinMiB:    "40960",
+				hardware.AnnotNetworkZoneReq:   "zone-a",
+				hardware.AnnotNetworkBWMinGbps: "25",
+				hardware.AnnotBinPackWeight:    "1.5",
+			},
+		},
+	}
+
+	reqs := hardware.ParsePodHardwareReqs(pod)
+
+	if reqs.WorkloadType != "ml-training" {
+		t.Errorf("WorkloadType: got %q, want ml-training", reqs.WorkloadType)
+	}
+	if reqs.GPUVendorReq != "nvidia" {
+		t.Errorf("GPUVendorReq: got %q, want nvidia", reqs.GPUVendorReq)
+	}
+	if reqs.GPUVRAMMinMiB != 40960 {
+		t.Errorf("GPUVRAMMinMiB: got %d, want 40960", reqs.GPUVRAMMinMiB)
+	}
+	if reqs.NetworkZoneReq != "zone-a" {
+		t.Errorf("NetworkZoneReq: got %q, want zone-a", reqs.NetworkZoneReq)
+	}
+	if reqs.NetworkBWMinGbps != 25 {
+		t.Errorf("NetworkBWMinGbps: got %d, want 25", reqs.NetworkBWMinGbps)
+	}
+	if reqs.BinPackWeight != 1.5 {
+		t.Errorf("BinPackWeight: got %f, want 1.5", reqs.BinPackWeight)
+	}
+}
+
+func TestParsePodHardwareReqs_Defaults(t *testing.T) {
+	pod := &corev1.Pod{}
+	reqs := hardware.ParsePodHardwareReqs(pod)
+
+	if reqs.WorkloadType != hardware.WorkloadAPI {
+		t.Errorf("WorkloadType default: got %q, want api", reqs.WorkloadType)
+	}
+	if reqs.BinPackWeight != 1.0 {
+		t.Errorf("BinPackWeight default: got %f, want 1.0", reqs.BinPackWeight)
+	}
+}
+
+func TestPodHardwareReqs_IsMLWorkload(t *testing.T) {
+	cases := []struct {
+		workload string
+		want     bool
+	}{
+		{"ml-training", true},
+		{"ml-inference", true},
+		{"ml-batch", true},
+		{"api", false},
+		{"db", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		reqs := hardware.PodHardwareReqs{WorkloadType: tc.workload}
+		if got := reqs.IsMLWorkload(); got != tc.want {
+			t.Errorf("IsMLWorkload() for %q: got %v, want %v", tc.workload, got, tc.want)
+		}
+	}
+}
+
+func TestPodHardwareReqs_NeedsGPU(t *testing.T) {
+	cases := []struct {
+		name   string
+		reqs   hardware.PodHardwareReqs
+		wantGPU bool
+	}{
+		{"explicit nvidia req", hardware.PodHardwareReqs{GPUVendorReq: "nvidia"}, true},
+		{"vram req", hardware.PodHardwareReqs{GPUVRAMMinMiB: 40960}, true},
+		{"any vendor", hardware.PodHardwareReqs{GPUVendorReq: "any"}, false},
+		{"no req", hardware.PodHardwareReqs{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.reqs.NeedsGPU(); got != tc.wantGPU {
+				t.Errorf("NeedsGPU() = %v, want %v", got, tc.wantGPU)
+			}
+		})
+	}
+}
+
+// ── Invalid label values ──────────────────────────────────────────────────────
+
+func TestParseNodeHardware_InvalidIntLabel_DefaultsToZero(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				hardware.LabelGPUCount: "not-a-number",
+			},
+		},
+	}
+	hw := hardware.ParseNodeHardware(node)
+	if hw.GPUCount != 0 {
+		t.Errorf("Invalid LabelGPUCount: got %d, want 0", hw.GPUCount)
+	}
+}
+
+func TestParsePodHardwareReqs_InvalidBinPackWeight_DefaultsTo1(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				hardware.AnnotBinPackWeight: "invalid",
+			},
+		},
+	}
+	reqs := hardware.ParsePodHardwareReqs(pod)
+	if reqs.BinPackWeight != 1.0 {
+		t.Errorf("Invalid BinPackWeight: got %f, want 1.0", reqs.BinPackWeight)
+	}
+}

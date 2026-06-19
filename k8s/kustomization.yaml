@@ -11,3 +11,13 @@ resources:
   - backend.yaml
   - frontend.yaml
   - ingress.yaml
+  # ML workload manifests (scheduler-annotated)
+  - ml-workloads/node-labels.yaml
+  - ml-workloads/summary-worker.yaml
+  - ml-workloads/ml-inference.yaml
+  - ml-workloads/ml-training.yaml
+
+components:
+  # Deploy the custom scheduler infrastructure.
+  # Apply separately with: kubectl apply -k k8s/scheduler/
+  # Listed here for documentation; exclude from base apply if not yet deployed.
