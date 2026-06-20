@@ -4,36 +4,64 @@
  *
  * Supported URLs:
  *   greenpay://project/123       → /projects/123
- *   greenpay://donate/G...ABC    → /donate/G...ABC  (address pre-selects via id param)
+ *   greenpay://donate/G...ABC    → /donate/G...ABC
+ *
+ * Fix for issue #32 — deep-link / hydration race condition
+ * ─────────────────────────────────────────────────────────
+ * Previously, Linking.getInitialURL() was awaited fire-and-forget inside a
+ * useEffect, so router.push() could fire before Redux / AsyncStorage hydration
+ * completed, causing crashes or blank screens on cold start.
+ *
+ * Now:
+ *  1. Cold-start URLs are passed to AppInitContext.queueDeepLink(), which
+ *     holds them until isHydrated === true.
+ *  2. The navigation handler is registered via AppInitContext.onDeepLinkReady()
+ *     so it is only ever invoked after the root state is fully loaded.
+ *  3. Warm-start URLs (app already open) bypass the queue because hydration
+ *     is already complete by definition.
  */
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
+import { useAppInit } from '../src/context/AppInitContext';
 
 export function useDeepLink() {
   const router = useRouter();
+  const { queueDeepLink, onDeepLinkReady } = useAppInit();
 
-  function handleUrl(url: string | null) {
-    if (!url) return;
-    const { path } = Linking.parse(url);
-    if (!path) return;
+  /** Parse a greenpay:// URL and push to the appropriate route. */
+  const handleUrl = useCallback(
+    (url: string | null) => {
+      if (!url) return;
+      const { path } = Linking.parse(url);
+      if (!path) return;
 
-    const [segment, param] = path.replace(/^\//, '').split('/');
-    if (!param) return;
+      const [segment, param] = path.replace(/^\//, '').split('/');
+      if (!param) return;
 
-    if (segment === 'project') {
-      router.push(`/projects/${param}`);
-    } else if (segment === 'donate') {
-      router.push(`/donate/${param}`);
-    }
-  }
+      if (segment === 'project') {
+        router.push(`/projects/${param}`);
+      } else if (segment === 'donate') {
+        router.push(`/donate/${param}`);
+      }
+    },
+    [router],
+  );
 
   useEffect(() => {
-    // Handle the link that launched the app (cold start)
-    Linking.getInitialURL().then(handleUrl);
+    // Register our navigation handler with the init context.
+    // It will be called only after isHydrated === true.
+    onDeepLinkReady(handleUrl);
 
-    // Handle links received while the app is already open
+    // Fetch the cold-start URL and hand it to the queue.
+    // AppInitContext will hold it until hydration is complete.
+    Linking.getInitialURL().then((url) => {
+      if (url) queueDeepLink(url);
+    });
+
+    // Handle links received while the app is already open (warm start).
+    // Hydration is guaranteed to be complete by the time this fires.
     const subscription = Linking.addEventListener('url', ({ url }) => handleUrl(url));
     return () => subscription.remove();
-  }, []);
+  }, [handleUrl, onDeepLinkReady, queueDeepLink]);
 }
