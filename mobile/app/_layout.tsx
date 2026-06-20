@@ -1,25 +1,32 @@
 /**
  * app/_layout.tsx
- * Root layout for the mobile app using expo-router
+ * Root layout for the mobile app using expo-router.
+ *
+ * Initialization order (fix for issue #32):
+ *   AppInitProvider boots first → hydrates AsyncStorage state → sets
+ *   isHydrated = true → AppInitContext flushes any queued deep-link URL →
+ *   useDeepLink navigates.  Navigation never fires before state is ready.
  */
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useColorScheme } from 'react-native';
 import { ThemeProvider, themes } from './theme';
 import { useDeepLink } from '../hooks/useDeepLink';
+import { AppInitProvider } from '../src/context/AppInitContext';
 
 function DeepLinkHandler() {
   useDeepLink();
   return null;
 }
 
-export default function RootLayout() {
+function AppShell() {
   const colorScheme = useColorScheme();
   const themeMode = colorScheme === 'dark' ? 'dark' : 'light';
   const theme = themes[themeMode];
 
   return (
     <ThemeProvider>
+      {/* DeepLinkHandler is inside AppInitProvider so useAppInit() resolves */}
       <DeepLinkHandler />
       <StatusBar style={theme.statusBarStyle} />
       <Stack screenOptions={{
@@ -37,5 +44,13 @@ export default function RootLayout() {
         <Stack.Screen name="recurring" options={{ title: 'Monthly Giving' }} />
       </Stack>
     </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AppInitProvider>
+      <AppShell />
+    </AppInitProvider>
   );
 }
